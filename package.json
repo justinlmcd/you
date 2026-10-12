@@ -1,0 +1,8 @@
+{
+  "name": "you",
+  "private": true,
+  "version": "0.1.0",
+  "description": "YOU. One page for all six: body, money, gym, meal, write, read. One number each, and a coach that reads across them.",
+  "scripts": { "dev": "node dev.js" },
+  "dependencies": { "@anthropic-ai/sdk": "^0.133.0" }
+}
