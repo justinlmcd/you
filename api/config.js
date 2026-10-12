@@ -14,7 +14,12 @@ module.exports = function config(request, response) {
     return response.end(JSON.stringify({error: 'Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Vercel, then redeploy YOU.'}));
   }
   const urls = {};
-  for (const app of APPS) { const v = (process.env['URL_' + app.toUpperCase()] || '').trim(); if (/^https:\/\/[^\s]+$/.test(v)) urls[app] = v.replace(/\/$/, ''); }
+  // Accept the address with or without https://, with or without a trailing slash.
+  for (const app of APPS) {
+    let v = (process.env['URL_' + app.toUpperCase()] || '').trim().replace(/\/+$/, '');
+    if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+    if (/^https?:\/\/[a-z0-9.-]+\.[a-z]{2,}(\/[^\s]*)?$/i.test(v)) urls[app] = v;
+  }
   response.statusCode = 200;
   response.end(JSON.stringify({url, key, urls}));
 };
