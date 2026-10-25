@@ -74,8 +74,8 @@ async function load(){
     body: ()=>readAll(()=>db.from('events').select('metric,value,unit,occurred_at',{count:'exact'}).eq('metric','weight').gte('occurred_at',since90+'T00:00:00Z').order('occurred_at',{ascending:false})),
     money: async()=>({tx:await readAll(()=>db.from('transactions').select('occurred_on,amount,category,merchant',{count:'exact'}).gte('occurred_on',since60).order('occurred_on',{ascending:false})),subs:await readAll(()=>db.from('subscriptions').select('name,amount,cadence,active',{count:'exact'}).order('name'))}),
     gym: async()=>({sets:await readAll(()=>db.from('sets').select('exercise_id,performed_on,weight,reps',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})),exercises:await readAll(()=>db.from('exercises').select('id,name',{count:'exact'}).order('name')),cardio:await readAll(()=>db.from('cardio').select('performed_on,kind,minutes,calories',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})).catch(()=>[])}),
-    meal: async()=>({entries:await readAll(()=>db.from('meal_entries').select('eaten_on,calories,protein,carbs,fat',{count:'exact'}).gte('eaten_on',addDays(today(),-13)).order('eaten_on',{ascending:false})),goals:(await db.from('meal_goals').select('*').maybeSingle()).data}),
-    write: ()=>readAll(()=>db.from('journal_entries').select('written_on,rating,body',{count:'exact'}).gte('written_on',addDays(today(),-29)).order('written_on',{ascending:false})),
+    meal: async()=>({entries:await readAll(()=>db.from('meal_entries').select('eaten_on,calories,protein,carbs,fat',{count:'exact'}).gte('eaten_on',since60).order('eaten_on',{ascending:false})),goals:(await db.from('meal_goals').select('*').maybeSingle()).data}),
+    write: ()=>readAll(()=>db.from('journal_entries').select('written_on,rating,body',{count:'exact'}).gte('written_on',since60).order('written_on',{ascending:false})),
     read: ()=>readAll(()=>db.from('books').select('title,author,status,rating,finished_on',{count:'exact'}).order('updated_at',{ascending:false}))
   };
   const results=await Promise.allSettled(APPS.map(a=>reads[a]()));
@@ -99,13 +99,26 @@ function render(){
   // MEAL: calories today against the goal
   if(!notSetUp('meal','MEAL')){ const {entries,goals}=data.meal.v; const rows=entries.filter(r=>r.eaten_on===t); const cal=rows.reduce((a,r)=>a+Number(r.calories),0); const goal=goals?Number(goals.calories):2000; const prot=rows.reduce((a,r)=>a+Number(r.protein),0); tile('meal',r0(cal),rows.length?`of ${r0(goal)} kcal today · ${r0(prot)} g protein · ${rows.length} item${rows.length===1?'':'s'}`:`of ${r0(goal)} kcal · nothing logged today`,'calories','kcal'); if(rows.length) loggedToday++; }
   // WRITE: today's or latest rating
-  if(!notSetUp('write','WRITE')){ const e=data.write.v; const latest=e[0]; const streak=(()=>{ let n=0,d=t; const has=x=>e.some(r=>r.written_on===x); if(!has(d)) d=addDays(d,-1); while(has(d)){ n++; d=addDays(d,-1); } return n; })(); if(!latest) tile('write','—','No entries yet.','today'); else { tile('write',`${latest.rating}`,`${latest.written_on===t?'today':latest.written_on===addDays(t,-1)?'yesterday':shortDate(latest.written_on)} · ${WORDS[latest.rating]} · ${streak}-day streak`,'rated','/10'); if(latest.written_on===t) loggedToday++; } }
+  if(!notSetUp('write','WRITE')){ const e=data.write.v; const latest=e[0]; if(!latest) tile('write','—','No entries yet.','today'); else { tile('write',`${latest.rating}`,`${latest.written_on===t?'today':latest.written_on===addDays(t,-1)?'yesterday':shortDate(latest.written_on)} · ${WORDS[latest.rating]}`,'rated','/10'); if(latest.written_on===t) loggedToday++; } }
   // READ: finished this year, reading now
   if(!notSetUp('read','READ')){ const b=data.read.v; const y=t.slice(0,4); const fin=b.filter(x=>x.status==='finished'&&(x.finished_on||'').startsWith(y)).length; const now=b.filter(x=>x.status==='reading'); tile('read',String(fin),now.length?`finished in ${y} · reading ${now.map(x=>x.title).slice(0,2).join(', ')}`:`finished in ${y} · nothing open`,'books',fin===1?'book':'books'); }
+  // Streaks: days in a row with something logged in each app. READ has no daily log, so it has none.
+  const DAYS={ body:v=>v.map(r=>isoDay(r.occurred_at)), money:v=>v.tx.map(r=>r.occurred_on), gym:v=>v.sets.map(s=>s.performed_on).concat((v.cardio||[]).map(c=>c.performed_on)), meal:v=>v.entries.map(r=>r.eaten_on), write:v=>v.map(r=>r.written_on) };
+  const FROM={body:-89,money:-59,gym:-59,meal:-59,write:-59};
+  for(const app in DAYS) streak(app,data[app]?.ok?DAYS[app](data[app].v):null,addDays(t,FROM[app]));
   const signed=!!user; const apps=APPS.filter(a=>data[a]?.ok).length;
   $('today-count').textContent=signed?String(loggedToday):'—'; $('today-unit').textContent=`of ${apps||6} logged today`;
   $('today-note').textContent=signed?(apps<6?`${apps} of 6 apps connected to this database.`:`All six apps on one login.`):'Sign in to see all of it in one place.';
   $('side-today').textContent=signed?`${loggedToday}/${apps||6}`:'—';
+}
+
+// Counting back from today. Today isn't over, so a streak that only misses today is still alive and shows faded
+// until something is logged. `since` is the first day read: a streak that reaches it shows as "N+".
+function streakOf(days,since){ const has=new Set(days), t=today(); let d=has.has(t)?t:addDays(t,-1), n=0; while(d>=since&&has.has(d)){ n++; d=addDays(d,-1); } return {n,kept:has.has(t),more:d<since}; }
+function streak(app,days,since){
+  const el=$(app+'-streak'), s=days?streakOf(days,since):{n:0}; $('app-'+app).classList.toggle('has-streak',s.n>0); el.hidden=!s.n; if(!s.n)return;
+  const n=s.n+(s.more?'+':''); el.textContent=`🔥 ${n}`; el.classList.toggle('waiting',!s.kept);
+  el.title=s.kept?`${n} day${s.n===1?'':'s'} in a row`:`${n}-day streak. Log today to keep it.`; el.setAttribute('aria-label',el.title);
 }
 
 // What the coach reads: the last few weeks of every app, side by side.
@@ -115,8 +128,8 @@ function coachSummary(){
   if(data.body?.ok){ const w=data.body.v; L.push(`BODY: ${w.length} weight readings in 90 days.${w[0]?` Latest ${w[0].value} ${w[0].unit} on ${w[0].occurred_at.slice(0,10)}.`:''}`); for(const r of w) add(r.occurred_at.slice(0,10),`weight ${r.value}${r.unit}`); }
   if(data.money?.ok){ const {tx,subs}=data.money.v; const ms=t.slice(0,8)+'01'; L.push(`MONEY: ${currency.format(tx.filter(r=>r.occurred_on>=ms).reduce((a,r)=>a+Number(r.amount),0))} this month, ${currency.format(tx.filter(r=>r.occurred_on>=since).reduce((a,r)=>a+Number(r.amount),0))} in 28 days. Subscriptions: ${subs.filter(s=>s.active).map(s=>`${s.name} ${currency.format(s.amount)}/${s.cadence}`).join(', ')||'none'}.`); const byDay={}; for(const r of tx){ byDay[r.occurred_on]=(byDay[r.occurred_on]||0)+Number(r.amount); } for(const [d,v] of Object.entries(byDay)) add(d,`spent ${currency.format(v)}`); }
   if(data.gym?.ok){ const {sets,exercises}=data.gym.v; const name=id=>exercises.find(e=>e.id===id)?.name||'exercise'; const byDay={}; for(const s of sets){ byDay[s.performed_on]=byDay[s.performed_on]||new Set(); byDay[s.performed_on].add(name(s.exercise_id)); } L.push(`GYM: ${Object.keys(byDay).length} lifting days in 60 days.`); for(const [d,ex] of Object.entries(byDay)) add(d,`trained ${[...ex].join('/')}`); for(const c of (data.gym.v.cardio||[])) add(c.performed_on,`cardio ${c.kind} ${Math.round(c.minutes)} min${c.calories!=null?` ${Math.round(c.calories)} kcal`:''}`); }
-  if(data.meal?.ok){ const {entries,goals}=data.meal.v; const goal=goals?Number(goals.calories):2000; const byDay={}; for(const r of entries){ byDay[r.eaten_on]=byDay[r.eaten_on]||{c:0,p:0}; byDay[r.eaten_on].c+=Number(r.calories); byDay[r.eaten_on].p+=Number(r.protein); } L.push(`MEAL: goal ${r0(goal)} kcal/day${goals?`, protein ${r0(goals.protein)} g`:''}. ${Object.keys(byDay).length} of the last 14 days logged.`); for(const [d,v] of Object.entries(byDay)) add(d,`ate ${r0(v.c)} kcal (P ${r0(v.p)}g)${v.c>goal?' OVER goal':''}`); }
-  if(data.write?.ok){ const e=data.write.v; L.push(`WRITE: ${e.length} journal entries in 30 days, average rating ${e.length?r1(e.reduce((a,r)=>a+r.rating,0)/e.length):'none'}.`); for(const r of e) add(r.written_on,`rated day ${r.rating}/10${r.body?.trim()?` "${r.body.trim().slice(0,140).replace(/\s+/g,' ')}${r.body.length>140?'…':''}"`:''}`); }
+  if(data.meal?.ok){ const {goals}=data.meal.v; const entries=data.meal.v.entries.filter(r=>r.eaten_on>=addDays(t,-13)); const goal=goals?Number(goals.calories):2000; const byDay={}; for(const r of entries){ byDay[r.eaten_on]=byDay[r.eaten_on]||{c:0,p:0}; byDay[r.eaten_on].c+=Number(r.calories); byDay[r.eaten_on].p+=Number(r.protein); } L.push(`MEAL: goal ${r0(goal)} kcal/day${goals?`, protein ${r0(goals.protein)} g`:''}. ${Object.keys(byDay).length} of the last 14 days logged.`); for(const [d,v] of Object.entries(byDay)) add(d,`ate ${r0(v.c)} kcal (P ${r0(v.p)}g)${v.c>goal?' OVER goal':''}`); }
+  if(data.write?.ok){ const e=data.write.v.filter(r=>r.written_on>=addDays(t,-29)); L.push(`WRITE: ${e.length} journal entries in 30 days, average rating ${e.length?r1(e.reduce((a,r)=>a+r.rating,0)/e.length):'none'}.`); for(const r of e) add(r.written_on,`rated day ${r.rating}/10${r.body?.trim()?` "${r.body.trim().slice(0,140).replace(/\s+/g,' ')}${r.body.length>140?'…':''}"`:''}`); }
   if(data.read?.ok){ const b=data.read.v; L.push(`READ: reading ${b.filter(x=>x.status==='reading').map(x=>x.title).join(', ')||'nothing'}; finished ${b.filter(x=>x.status==='finished'&&(x.finished_on||'')>=since).map(x=>`${x.title} (${x.rating}/10)`).join(', ')||'nothing'} in 28 days.`); for(const x of b) if(x.finished_on) add(x.finished_on,`finished reading ${x.title}`); }
   L.push('\nDay by day, last 28 days (missing days had nothing logged anywhere):');
   for(let d=since; d<=t; d=addDays(d,1)) if(dayLine[d]) L.push(`${d}: ${dayLine[d].join('; ')}`);
