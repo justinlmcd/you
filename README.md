@@ -20,9 +20,16 @@ Vercel redeploys on every push to `main`.
 
 - `index.html` — the page and its styles
 - `you.js` — sign-in, one read per app, the six numbers, and the cross-app coach summary
+- `api/week.mjs` — the Vercel function behind **Write my weekly review**
 - `coach.js` and `api/coach.mjs` — the coach card and the Vercel function behind it
 - `api/config.js` — hands the public Supabase settings and the six app addresses to the page
 - `quote-of-day.js` — a quote that changes at local midnight
+
+## Your week
+
+Below the tiles, **Your week** shows last week (or this week, on a Sunday) across all six apps, each against the week before: weight change, money spent against your weekly budget and debt left, workouts and cardio minutes, average calories and days within your goal, your average day rating with the best and lowest day, and pages read. A grid of dots shows which days you logged each app.
+
+Press **Write my weekly review** and Claude reads the whole week, day by day, and writes what went well, what to watch, one connection between the apps (for example low-rated days that follow skipped workouts), and one focus for next week. Nothing is sent until you press it; each week's review is kept on this device. It uses the same `ANTHROPIC_API_KEY` as the coach and costs a few cents.
 
 ## Add to your iPhone home screen
 

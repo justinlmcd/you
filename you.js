@@ -72,7 +72,7 @@ async function load(){
   const since90=addDays(today(),-89), since60=addDays(today(),-59);
   const reads={
     body: ()=>readAll(()=>db.from('events').select('metric,value,unit,occurred_at',{count:'exact'}).eq('metric','weight').gte('occurred_at',since90+'T00:00:00Z').order('occurred_at',{ascending:false})),
-    money: async()=>({tx:await readAll(()=>db.from('transactions').select('occurred_on,amount,category,merchant',{count:'exact'}).gte('occurred_on',since60).order('occurred_on',{ascending:false})),subs:await readAll(()=>db.from('subscriptions').select('name,amount,cadence,active',{count:'exact'}).order('name'))}),
+    money: async()=>({tx:await readAll(()=>db.from('transactions').select('occurred_on,amount,category,merchant',{count:'exact'}).gte('occurred_on',since60).order('occurred_on',{ascending:false})),subs:await readAll(()=>db.from('subscriptions').select('name,amount,cadence,active',{count:'exact'}).order('name')),budget:(await db.from('money_profile').select('budget').maybeSingle()).data?.budget||null,debts:await readAll(()=>db.from('debts').select('name,balance',{count:'exact'}).order('name')).catch(()=>[])}),
     gym: async()=>({sets:await readAll(()=>db.from('sets').select('exercise_id,performed_on,weight,reps',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})),exercises:await readAll(()=>db.from('exercises').select('id,name',{count:'exact'}).order('name')),cardio:await readAll(()=>db.from('cardio').select('performed_on,kind,minutes,calories',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})).catch(()=>[])}),
     meal: async()=>({entries:await readAll(()=>db.from('meal_entries').select('eaten_on,calories,protein,carbs,fat',{count:'exact'}).gte('eaten_on',since60).order('eaten_on',{ascending:false})),goals:(await db.from('meal_goals').select('*').maybeSingle()).data}),
     write: ()=>readAll(()=>db.from('journal_entries').select('written_on,rating,body',{count:'exact'}).gte('written_on',since60).order('written_on',{ascending:false})),
@@ -110,6 +110,7 @@ function render(){
   $('today-count').textContent=signed?String(loggedToday):'—'; $('today-unit').textContent=`of ${apps||6} logged today`;
   $('today-note').textContent=signed?(apps<6?`${apps} of 6 apps connected to this database.`:`All six apps on one login.`):'Sign in to see all of it in one place.';
   $('side-today').textContent=signed?`${loggedToday}/${apps||6}`:'—';
+  renderWeek();
 }
 
 // Counting back from today. Today isn't over, so a streak that only misses today is still alive and shows faded
@@ -135,6 +136,108 @@ function coachSummary(){
   for(let d=since; d<=t; d=addDays(d,1)) if(dayLine[d]) L.push(`${d}: ${dayLine[d].join('; ')}`);
   return L.join('\n');
 }
+// ---- your week: each app's week against the week before, the days you logged, and a review on request ----
+let weekPick=null, weekBusy=false, weekError='';
+const WEEK_APPS=[['body','BODY','#8fd3ff'],['money','MONEY','#8fe3b0'],['gym','GYM','#ff9b9b'],['meal','MEAL','#c9a7ff'],['write','WRITE','#ffd98a'],['read','READ','#ffb86b']];
+// Last week, or this week on a Sunday when it's almost done.
+const defaultWeek=()=>parseDay(today()).getDay()===0?'this':'last';
+// 'this' and 'last', plus the week before each for comparisons: 'prev-this' is last week, 'prev-last' the one before.
+function weekRange(which){ const cur=weekStart(today()), back={this:0,last:7,'prev-this':7,'prev-last':14}[which]??7, start=addDays(cur,-back), end=addDays(start,6); return {start,end,until:end<today()?end:today(),days:Array.from({length:7},(_,i)=>addDays(start,i))}; }
+const inRange=(d,r)=>d>=r.start&&d<=r.end;
+const bodyDay=r=>isoDay(r.occurred_at);
+const fmtMoney=n=>currency.format(Math.round(n));
+// Everything about one week that the cards, the grid and the review need.
+function weekStats(r){
+  const S={days:{}}; for(const d of r.days) S.days[d]={};
+  const mark=(app,d)=>{ if(S.days[d]) S.days[d][app]=true; };
+  if(data.body?.ok){ const all=data.body.v, inW=all.filter(x=>inRange(bodyDay(x),r)).sort((a,b)=>a.occurred_at<b.occurred_at?-1:1), before=all.filter(x=>bodyDay(x)<r.start).sort((a,b)=>a.occurred_at<b.occurred_at?1:-1)[0];
+    inW.forEach(x=>mark('body',bodyDay(x))); const last=inW.at(-1), base=before||inW[0];
+    S.body={n:inW.length,last:last?Number(last.value):null,unit:last?.unit||base?.unit||'',change:last&&base&&base!==last?Number(last.value)-Number(base.value):null,byDay:Object.fromEntries(inW.map(x=>[bodyDay(x),Number(x.value)]))}; }
+  if(data.money?.ok){ const {tx,budget,debts=[]}=data.money.v, inW=tx.filter(x=>inRange(x.occurred_on,r)); inW.forEach(x=>mark('money',x.occurred_on));
+    const plan=(budget?.allocations||[]).filter(a=>a.kind==='need'||a.kind==='want').reduce((a,x)=>a+Number(x.amount),0);
+    const byDay={}; for(const x of inW) byDay[x.occurred_on]=(byDay[x.occurred_on]||0)+Number(x.amount);
+    const cats={}; for(const x of inW) cats[x.category]=(cats[x.category]||0)+Number(x.amount);
+    S.money={spent:inW.reduce((a,x)=>a+Number(x.amount),0),weekBudget:plan?plan*12/52:null,debt:debts.reduce((a,d)=>a+Number(d.balance),0),hasDebts:debts.length>0,byDay,cats}; }
+  if(data.gym?.ok){ const {sets,exercises,cardio=[]}=data.gym.v, name=id=>exercises.find(e=>e.id===id)?.name||'exercise', s2=sets.filter(x=>inRange(x.performed_on,r)), c2=cardio.filter(x=>inRange(x.performed_on,r));
+    s2.forEach(x=>mark('gym',x.performed_on)); c2.forEach(x=>mark('gym',x.performed_on));
+    const byDay={}; for(const x of s2){ (byDay[x.performed_on]=byDay[x.performed_on]||new Set()).add(name(x.exercise_id)); } for(const x of c2){ (byDay[x.performed_on]=byDay[x.performed_on]||new Set()).add(`${x.kind} ${Math.round(x.minutes)} min`); }
+    S.gym={days:Object.keys(byDay).length,sets:s2.length,cardioMin:c2.reduce((a,x)=>a+Number(x.minutes),0),byDay}; }
+  if(data.meal?.ok){ const {entries,goals}=data.meal.v, goal=goals?Number(goals.calories):2000, inW=entries.filter(x=>inRange(x.eaten_on,r)); inW.forEach(x=>mark('meal',x.eaten_on));
+    const byDay={}; for(const x of inW){ const d=byDay[x.eaten_on]=byDay[x.eaten_on]||{c:0,p:0}; d.c+=Number(x.calories); d.p+=Number(x.protein); }
+    const days=Object.values(byDay); S.meal={logged:days.length,avg:days.length?days.reduce((a,d)=>a+d.c,0)/days.length:null,protein:days.length?days.reduce((a,d)=>a+d.p,0)/days.length:null,onGoal:days.filter(d=>d.c<=goal).length,goal,byDay}; }
+  if(data.write?.ok){ const inW=data.write.v.filter(x=>inRange(x.written_on,r)); inW.forEach(x=>mark('write',x.written_on));
+    const sorted=[...inW].sort((a,b)=>b.rating-a.rating); S.write={n:inW.length,avg:inW.length?inW.reduce((a,x)=>a+x.rating,0)/inW.length:null,best:sorted[0],worst:sorted.length>1?sorted.at(-1):null,byDay:Object.fromEntries(inW.map(x=>[x.written_on,x]))}; }
+  if(data.read?.ok){ const inW=(data.read.v.logs||[]).filter(x=>inRange(x.read_on,r)); inW.forEach(x=>mark('read',x.read_on));
+    const byDay={}; for(const x of inW) byDay[x.read_on]=(byDay[x.read_on]||0)+Number(x.pages); S.read={pages:inW.reduce((a,x)=>a+Number(x.pages),0),days:Object.keys(byDay).length,byDay}; }
+  return S;
+}
+// "+3" / "−2" against last week, green when it's the good direction.
+function delta(now,before,goodUp,fmt=r0){ if(now==null||before==null) return ''; const d=now-before; if(Math.abs(d)<0.05) return ' · same as the week before'; return ` · <span class="${(d>0)===goodUp?'up':'down'}">${d>0?'+':'−'}${esc(fmt(Math.abs(d)))}</span> vs the week before`; }
+const shortDay=d=>parseDay(d).toLocaleDateString([], {weekday:'short'});
+function renderWeek(){
+  const body=$('week-body'); if(!weekPick) weekPick=defaultWeek();
+  document.querySelectorAll('[data-week]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.week===weekPick)));
+  const r=weekRange(weekPick), fmtD=d=>parseDay(d).toLocaleDateString([], {month:'short',day:'numeric'});
+  $('week-range').textContent=` · ${fmtD(r.start)} – ${fmtD(r.end)}`;
+  if(!user){ body.innerHTML='<p class="coach-empty">Sign in to see your week across all six apps.</p>'; return; }
+  if(!Object.keys(data).length){ body.innerHTML='<p class="coach-empty">Loading your week…</p>'; return; }
+  const S=weekStats(r), P=weekStats(weekRange(weekPick==='this'?'prev-this':'prev-last'));
+  const card=(app,label,c,value,unit,note)=>`<div class="wcard" style="--c:${c}"><p>${label}</p><strong>${value}${unit?`<small>${unit}</small>`:''}</strong><small class="note">${note}</small></div>`;
+  const off=app=>!data[app]?.ok;
+  const cards=[
+    off('body')?card('body','BODY','#8fd3ff','—','','not set up'):S.body.change!=null?card('body','BODY','#8fd3ff',`${S.body.change>0?'+':S.body.change<0?'−':''}${r1(Math.abs(S.body.change))}`,esc(S.body.unit),`now ${r1(S.body.last)} ${esc(S.body.unit)} · ${S.body.n} reading${S.body.n===1?'':'s'}`):card('body','BODY','#8fd3ff',S.body.n?r1(S.body.last):'—',S.body.n?esc(S.body.unit):'',S.body.n?`${S.body.n} reading this week`:'no readings this week'),
+    off('money')?card('money','MONEY','#8fe3b0','—','','not set up'):card('money','MONEY','#8fe3b0',esc(fmtMoney(S.money.spent)),'spent',(S.money.weekBudget?`${S.money.spent<=S.money.weekBudget?`${esc(fmtMoney(S.money.weekBudget-S.money.spent))} under`:`<span class="down">${esc(fmtMoney(S.money.spent-S.money.weekBudget))} over</span>`} your ${esc(fmtMoney(S.money.weekBudget))} week`:'this week')+delta(S.money.spent,P.money?.spent,false,fmtMoney)+(S.money.hasDebts?` · ${esc(fmtMoney(S.money.debt))} debt left`:'')),
+    off('gym')?card('gym','GYM','#ff9b9b','—','','not set up'):card('gym','GYM','#ff9b9b',String(S.gym.days),S.gym.days===1?'workout':'workouts',`${S.gym.sets} sets${S.gym.cardioMin?` · ${r0(S.gym.cardioMin)} min cardio`:''}${delta(S.gym.days,P.gym?.days,true)}`),
+    off('meal')?card('meal','MEAL','#c9a7ff','—','','not set up'):card('meal','MEAL','#c9a7ff',S.meal.avg!=null?r0(S.meal.avg):'—',S.meal.avg!=null?'kcal/day':'',S.meal.logged?`${S.meal.onGoal} of ${S.meal.logged} logged days within ${r0(S.meal.goal)} · ${r0(S.meal.protein)} g protein`:'nothing logged this week'),
+    off('write')?card('write','WRITE','#ffd98a','—','','not set up'):card('write','WRITE','#ffd98a',S.write.avg!=null?r1(S.write.avg):'—',S.write.avg!=null?'/10 avg':'',S.write.n?`best ${esc(shortDay(S.write.best.written_on))} ${S.write.best.rating}${S.write.worst?` · lowest ${esc(shortDay(S.write.worst.written_on))} ${S.write.worst.rating}`:''}${delta(S.write.avg,P.write?.avg,true,r1)}`:'no entries this week'),
+    off('read')?card('read','READ','#ffb86b','—','','not set up'):card('read','READ','#ffb86b',String(S.read.pages),S.read.pages===1?'page':'pages',`${S.read.days} day${S.read.days===1?'':'s'} read${delta(S.read.pages,P.read?.pages,true)}`),
+  ].join('');
+  const t=today(), full=r.days.filter(d=>d<=t&&WEEK_APPS.every(([a])=>off(a)||S.days[d][a])).length, counted=r.days.filter(d=>d<=t).length;
+  const grid=`<div class="grid-wrap"><table class="wgrid"><caption class="sr-only" style="position:absolute;left:-9999px">Days logged per app</caption><thead><tr><th></th>${r.days.map(d=>`<th scope="col">${esc(shortDay(d)).slice(0,2)}</th>`).join('')}</tr></thead><tbody>${WEEK_APPS.filter(([a])=>!off(a)).map(([a,label,c])=>`<tr style="--c:${c}"><th scope="row">${label}</th>${r.days.map(d=>`<td class="${d>t?'future':''}"><i class="${S.days[d][a]?'on':''}" aria-label="${S.days[d][a]?'logged':'not logged'}"></i></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const saved=loadReview(r.start);
+  body.innerHTML=`<div class="week-cards">${cards}</div>${grid}<p class="week-note">${full} of ${counted} day${counted===1?'':'s'} with every app logged.</p>
+  <div class="week-review"><div class="wr-head"><h3 style="margin:0">Weekly review</h3><button class="quiet-button" id="week-ask" type="button"${weekBusy?' disabled':''}>${saved?'Write it again ↗':'Write my weekly review ↗'}</button></div><div id="week-review-body">${saved?reviewHtml(saved):`<p class="coach-empty" style="margin-top:10px">Claude reads this week across all six apps and tells you what went well, what to watch, and one connection between them. Nothing is sent until you press the button.</p>`}</div><p class="message${weekError?' error':''}" id="week-message" role="status" aria-live="polite">${weekBusy?'<span class="spinner"></span>Reading your week…':esc(weekError)}</p></div>`;
+  $('week-ask').onclick=askWeek;
+}
+document.addEventListener('click',e=>{ const b=e.target.closest('[data-week]'); if(!b)return; weekPick=b.dataset.week; weekError=''; renderWeek(); });
+
+// What the review reads: each app's week against the week before, then every day side by side.
+function weekSummary(){
+  const r=weekRange(weekPick), S=weekStats(r), P=weekStats(weekRange(weekPick==='this'?'prev-this':'prev-last'));
+  const L=[`Week ${r.start} to ${r.end}${r.until<r.end?` (so far, through ${r.until})`:''}. Currency ${currency.resolvedOptions().currency}.`];
+  if(S.body) L.push(`BODY: ${S.body.n} weight readings${S.body.change!=null?`, change ${S.body.change>0?'+':''}${r1(S.body.change)} ${S.body.unit} to ${r1(S.body.last)}`:''}.`);
+  if(S.money) L.push(`MONEY: spent ${fmtMoney(S.money.spent)} (week before ${fmtMoney(P.money?.spent||0)})${S.money.weekBudget?`, weekly budget ${fmtMoney(S.money.weekBudget)}`:''}. By category: ${Object.entries(S.money.cats).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${fmtMoney(v)}`).join(', ')||'none'}.${S.money.hasDebts?` Debt left ${fmtMoney(S.money.debt)}.`:''}`);
+  if(S.gym) L.push(`GYM: ${S.gym.days} workout days (week before ${P.gym?.days??0}), ${S.gym.sets} sets, ${r0(S.gym.cardioMin)} cardio minutes.`);
+  if(S.meal) L.push(`MEAL: ${S.meal.logged} days logged, average ${S.meal.avg!=null?r0(S.meal.avg):'n/a'} kcal against a ${r0(S.meal.goal)} goal, ${S.meal.onGoal} days within it, protein ${S.meal.protein!=null?r0(S.meal.protein):'n/a'} g a day.`);
+  if(S.write) L.push(`WRITE: ${S.write.n} entries, average rating ${S.write.avg!=null?r1(S.write.avg):'n/a'} (week before ${P.write?.avg!=null?r1(P.write.avg):'n/a'}).`);
+  if(S.read) L.push(`READ: ${S.read.pages} pages on ${S.read.days} days (week before ${P.read?.pages??0} pages).`);
+  L.push('\nDay by day:');
+  for(const d of r.days){ if(d>r.until) break; const x=[];
+    if(S.body?.byDay[d]!=null) x.push(`weight ${S.body.byDay[d]}`);
+    if(S.money?.byDay[d]) x.push(`spent ${fmtMoney(S.money.byDay[d])}`);
+    if(S.gym?.byDay[d]) x.push(`trained ${[...S.gym.byDay[d]].join('/')}`);
+    if(S.meal?.byDay[d]) x.push(`ate ${r0(S.meal.byDay[d].c)} kcal, ${r0(S.meal.byDay[d].p)} g protein`);
+    if(S.write?.byDay[d]){ const j=S.write.byDay[d]; x.push(`rated ${j.rating}/10${j.body?.trim()?` "${j.body.trim().slice(0,160).replace(/\s+/g,' ')}${j.body.length>160?'…':''}"`:''}`); }
+    if(S.read?.byDay[d]) x.push(`read ${S.read.byDay[d]} pages`);
+    L.push(`${d} (${shortDay(d)}): ${x.join('; ')||'nothing logged'}`); }
+  return L.join('\n');
+}
+const reviewKey=start=>`you.week.${user?.id}.${start}`;
+function loadReview(start){ try{ return JSON.parse(localStorage.getItem(reviewKey(start))||'null'); }catch{ return null; } }
+function reviewHtml(v){
+  return `<p class="head">${esc(v.headline)}</p><div class="cols"><div><h3>Went well</h3><ul>${v.wins.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></div><div><h3>Watch</h3><ul>${v.watch.map(w=>`<li><b>${esc(w.what)}</b>${esc(w.why)}</li>`).join('')}</ul></div></div>${v.connection?`<p class="link"><span>The connection</span>${esc(v.connection)}</p>`:''}<p class="link"><span>Next week</span>${esc(v.next_week)}</p><p class="week-note">Written ${esc(new Date(v.at).toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'}))} from your own logs, not medical or financial advice.</p>`;
+}
+async function askWeek(){
+  if(weekBusy||!user)return; const r=weekRange(weekPick); weekBusy=true; weekError=''; renderWeek();
+  try{
+    const db=await connect(); const {data:{session}}=await db.auth.getSession(); if(!session?.access_token) throw new Error('Sign in again to write the review.');
+    const res=await fetch('/api/week',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token},body:JSON.stringify({summary:weekSummary()})});
+    const j=await res.json().catch(()=>({})); if(!res.ok) throw new Error(j.error||'The review could not be written.');
+    try{ localStorage.setItem(reviewKey(r.start),JSON.stringify(j)); }catch{}
+  }catch(err){ weekError=err.message||'The review could not be written.'; }
+  finally{ weekBusy=false; renderWeek(); }
+}
+
 window.coach={app:'you',note:'The coach reads the last few weeks from all six apps, including short journal excerpts.',userId:async()=>user?.id||null,session:async()=>{ try{ const db=await connect(); const {data:{session}}=await db.auth.getSession(); return session?.access_token||null; }catch{ return null; } },summary:coachSummary};
 // Show the score in the sidebar whenever the coach card renders one.
 new MutationObserver(()=>{ const s=document.querySelector('#coach .coach-score'); $('side-score').textContent=s?s.firstChild.textContent.trim():'—'; }).observe($('coach-body'),{childList:true,subtree:true});

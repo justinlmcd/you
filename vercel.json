@@ -1,4 +1,11 @@
 {
   "cleanUrls": true,
-  "functions": { "api/coach.mjs": { "maxDuration": 60 } }
+  "functions": {
+    "api/coach.mjs": {
+      "maxDuration": 60
+    },
+    "api/week.mjs": {
+      "maxDuration": 120
+    }
+  }
 }
