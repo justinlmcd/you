@@ -1,7 +1,7 @@
 'use strict';
 
 // Public settings only: the Supabase connection and where each app lives. No secret leaves the server.
-const APPS = ['body', 'money', 'gym', 'meal', 'write', 'read'];
+const APPS = ['body', 'money', 'gym', 'meal', 'write', 'read', 'sleep'];
 module.exports = function config(request, response) {
   response.setHeader('Content-Type', 'application/json; charset=utf-8');
   response.setHeader('Cache-Control', 'no-store');

@@ -1,9 +1,9 @@
-// YOU. Reads what the six apps wrote and shows one number each. Nothing is written from here.
+// YOU. Reads what the seven apps wrote and shows one number each. Nothing is written from here.
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const APPS=['body','money','gym','meal','write','read'];
+const APPS=['body','money','gym','meal','write','read','sleep'];
 const isoDay=d=>{ const x=new Date(d); return new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,10); };
 const today=()=>isoDay(new Date());
 const parseDay=s=>{ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
@@ -12,6 +12,9 @@ const weekStart=s=>addDays(s,-((parseDay(s).getDay()+6)%7));
 const shortDate=s=>parseDay(s).toLocaleDateString([], {month:'short',day:'numeric'});
 const r0=n=>String(Math.round(Number(n)||0)); const r1=n=>{ const v=Math.round((Number(n)||0)*10)/10; return Number.isInteger(v)?String(v):v.toFixed(1); };
 const currency=new Intl.NumberFormat([], {style:'currency',currency:'USD',maximumFractionDigits:0});
+// "7h 05m" from minutes asleep; clock time from a timestamp.
+const hm=m=>{ m=Math.round(Number(m)||0); return `${Math.floor(m/60)}h ${String(m%60).padStart(2,'0')}m`; };
+const clock=ts=>new Date(ts).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
 const WORDS={1:'Awful',2:'Rough',3:'Bad',4:'Meh',5:'Okay',6:'Fine',7:'Good',8:'Great',9:'Excellent',10:'Perfect'};
 
 let client=null,user=null,busy=false,authSub=null,connecting=null,storageCleanup=null,urls={},loadId=0;
@@ -76,7 +79,8 @@ async function load(){
     gym: async()=>({sets:await readAll(()=>db.from('sets').select('exercise_id,performed_on,weight,reps',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})),exercises:await readAll(()=>db.from('exercises').select('id,name',{count:'exact'}).order('name')),cardio:await readAll(()=>db.from('cardio').select('performed_on,kind,minutes,calories',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})).catch(()=>[])}),
     meal: async()=>({entries:await readAll(()=>db.from('meal_entries').select('eaten_on,calories,protein,carbs,fat',{count:'exact'}).gte('eaten_on',since60).order('eaten_on',{ascending:false})),goals:(await db.from('meal_goals').select('*').maybeSingle()).data}),
     write: ()=>readAll(()=>db.from('journal_entries').select('written_on,rating,body',{count:'exact'}).gte('written_on',since60).order('written_on',{ascending:false})),
-    read: async()=>({books:await readAll(()=>db.from('books').select('title,author,status,rating,finished_on',{count:'exact'}).order('updated_at',{ascending:false})),logs:await readAll(()=>db.from('reading_log').select('read_on,pages',{count:'exact'}).gte('read_on',since60).order('read_on',{ascending:false})).catch(()=>[])})
+    read: async()=>({books:await readAll(()=>db.from('books').select('title,author,status,rating,finished_on',{count:'exact'}).order('updated_at',{ascending:false})),logs:await readAll(()=>db.from('reading_log').select('read_on,pages',{count:'exact'}).gte('read_on',since60).order('read_on',{ascending:false})).catch(()=>[])}),
+    sleep: async()=>({nights:await readAll(()=>db.from('sleep_nights').select('night,bedtime,wake_time,asleep_min,deep_min,rem_min,resting_hr',{count:'exact'}).gte('night',since60).order('night',{ascending:false})),goal:Number((await db.from('sleep_goals').select('goal_hours').maybeSingle()).data?.goal_hours)||8})
   };
   const results=await Promise.allSettled(APPS.map(a=>reads[a]()));
   if(id!==loadId)return;
@@ -102,14 +106,16 @@ function render(){
   if(!notSetUp('write','WRITE')){ const e=data.write.v; const latest=e[0]; if(!latest) tile('write','—','No entries yet.','today'); else { tile('write',`${latest.rating}`,`${latest.written_on===t?'today':latest.written_on===addDays(t,-1)?'yesterday':shortDate(latest.written_on)} · ${WORDS[latest.rating]}`,'rated','/10'); if(latest.written_on===t) loggedToday++; } }
   // READ: finished this year, reading now
   if(!notSetUp('read','READ')){ const b=data.read.v.books; const y=t.slice(0,4); const pagesToday=data.read.v.logs.filter(l=>l.read_on===t).reduce((a,l)=>a+Number(l.pages),0); const fin=b.filter(x=>x.status==='finished'&&(x.finished_on||'').startsWith(y)).length; const now=b.filter(x=>x.status==='reading'); tile('read',String(fin),now.length?`finished in ${y} · reading ${now.map(x=>x.title).slice(0,2).join(', ')}`:`finished in ${y} · nothing open`,'books',fin===1?'book':'books'); if(pagesToday){ $('read-note').textContent+=` · ${pagesToday} page${pagesToday===1?'':'s'} today`; loggedToday++; } }
-  // Streaks: days in a row with something logged in each app. READ counts days with pages logged.
-  const DAYS={ body:v=>v.map(r=>isoDay(r.occurred_at)), money:v=>v.tx.map(r=>r.occurred_on), gym:v=>v.sets.map(s=>s.performed_on).concat((v.cardio||[]).map(c=>c.performed_on)), meal:v=>v.entries.map(r=>r.eaten_on), write:v=>v.map(r=>r.written_on), read:v=>v.logs.map(l=>l.read_on) };
-  const FROM={body:-89,money:-59,gym:-59,meal:-59,write:-59,read:-59};
+  // SLEEP: last night from Apple Health, against your goal. It logs itself, so a night recorded this morning counts as today.
+  if(!notSetUp('sleep','SLEEP')){ const {nights,goal}=data.sleep.v; const last=nights[0]; if(!last) tile('sleep','—','No nights yet. Wear your watch to bed with Sleep on.','asleep'); else { const wk=nights.filter(n=>n.night>addDays(t,-7)); const avg=wk.length?wk.reduce((a,n)=>a+Number(n.asleep_min),0)/wk.length:null; tile('sleep',hm(last.asleep_min),`${last.night===t?'last night':`night before ${shortDate(last.night)}`} · ${clock(last.bedtime)} → ${clock(last.wake_time)}${avg!=null?` · ${hm(avg)} avg vs ${r1(goal)}h goal`:''}`,'asleep'); if(last.night===t) loggedToday++; } }
+  // Streaks: days in a row with something logged in each app. READ counts days with pages logged, SLEEP nights recorded.
+  const DAYS={ body:v=>v.map(r=>isoDay(r.occurred_at)), money:v=>v.tx.map(r=>r.occurred_on), gym:v=>v.sets.map(s=>s.performed_on).concat((v.cardio||[]).map(c=>c.performed_on)), meal:v=>v.entries.map(r=>r.eaten_on), write:v=>v.map(r=>r.written_on), read:v=>v.logs.map(l=>l.read_on), sleep:v=>v.nights.map(n=>n.night) };
+  const FROM={body:-89,money:-59,gym:-59,meal:-59,write:-59,read:-59,sleep:-59};
   for(const app in DAYS) streak(app,data[app]?.ok?DAYS[app](data[app].v):null,addDays(t,FROM[app]));
   const signed=!!user; const apps=APPS.filter(a=>data[a]?.ok).length;
-  $('today-count').textContent=signed?String(loggedToday):'—'; $('today-unit').textContent=`of ${apps||6} logged today`;
-  $('today-note').textContent=signed?(apps<6?`${apps} of 6 apps connected to this database.`:`All six apps on one login.`):'Sign in to see all of it in one place.';
-  $('side-today').textContent=signed?`${loggedToday}/${apps||6}`:'—';
+  $('today-count').textContent=signed?String(loggedToday):'—'; $('today-unit').textContent=`of ${apps||APPS.length} logged today`;
+  $('today-note').textContent=signed?(apps<APPS.length?`${apps} of ${APPS.length} apps connected to this database.`:`All seven apps on one login.`):'Sign in to see all of it in one place.';
+  $('side-today').textContent=signed?`${loggedToday}/${apps||APPS.length}`:'—';
   renderWeek();
 }
 
@@ -132,13 +138,14 @@ function coachSummary(){
   if(data.meal?.ok){ const {goals}=data.meal.v; const entries=data.meal.v.entries.filter(r=>r.eaten_on>=addDays(t,-13)); const goal=goals?Number(goals.calories):2000; const byDay={}; for(const r of entries){ byDay[r.eaten_on]=byDay[r.eaten_on]||{c:0,p:0}; byDay[r.eaten_on].c+=Number(r.calories); byDay[r.eaten_on].p+=Number(r.protein); } L.push(`MEAL: goal ${r0(goal)} kcal/day${goals?`, protein ${r0(goals.protein)} g`:''}. ${Object.keys(byDay).length} of the last 14 days logged.`); for(const [d,v] of Object.entries(byDay)) add(d,`ate ${r0(v.c)} kcal (P ${r0(v.p)}g)${v.c>goal?' OVER goal':''}`); }
   if(data.write?.ok){ const e=data.write.v.filter(r=>r.written_on>=addDays(t,-29)); L.push(`WRITE: ${e.length} journal entries in 30 days, average rating ${e.length?r1(e.reduce((a,r)=>a+r.rating,0)/e.length):'none'}.`); for(const r of e) add(r.written_on,`rated day ${r.rating}/10${r.body?.trim()?` "${r.body.trim().slice(0,140).replace(/\s+/g,' ')}${r.body.length>140?'…':''}"`:''}`); }
   if(data.read?.ok){ const b=data.read.v.books; L.push(`READ: reading ${b.filter(x=>x.status==='reading').map(x=>x.title).join(', ')||'nothing'}; finished ${b.filter(x=>x.status==='finished'&&(x.finished_on||'')>=since).map(x=>`${x.title} (${x.rating}/10)`).join(', ')||'nothing'} in 28 days.`); for(const x of b) if(x.finished_on) add(x.finished_on,`finished reading ${x.title}`); }
+  if(data.sleep?.ok){ const {nights,goal}=data.sleep.v; const n=nights.filter(x=>x.night>=since); L.push(`SLEEP (from Apple Health, keyed by the morning woken): goal ${r1(goal)} h. ${n.length} nights recorded in 28 days, average ${n.length?hm(n.reduce((a,x)=>a+Number(x.asleep_min),0)/n.length):'n/a'} asleep.`); for(const x of n) add(x.night,`slept ${hm(x.asleep_min)} the night before${x.deep_min!=null?` (deep ${hm(x.deep_min)}, REM ${hm(x.rem_min)})`:''}${x.resting_hr!=null?`, resting HR ${r0(x.resting_hr)}`:''}`); }
   L.push('\nDay by day, last 28 days (missing days had nothing logged anywhere):');
   for(let d=since; d<=t; d=addDays(d,1)) if(dayLine[d]) L.push(`${d}: ${dayLine[d].join('; ')}`);
   return L.join('\n');
 }
 // ---- your week: each app's week against the week before, the days you logged, and a review on request ----
 let weekPick=null, weekBusy=false, weekError='';
-const WEEK_APPS=[['body','BODY','#8fd3ff'],['money','MONEY','#8fe3b0'],['gym','GYM','#ff9b9b'],['meal','MEAL','#c9a7ff'],['write','WRITE','#ffd98a'],['read','READ','#ffb86b']];
+const WEEK_APPS=[['body','BODY','#8fd3ff'],['money','MONEY','#8fe3b0'],['gym','GYM','#ff9b9b'],['meal','MEAL','#c9a7ff'],['write','WRITE','#ffd98a'],['read','READ','#ffb86b'],['sleep','SLEEP','#9aa8ff']];
 // Last week, or this week on a Sunday when it's almost done.
 const defaultWeek=()=>parseDay(today()).getDay()===0?'this':'last';
 // 'this' and 'last', plus the week before each for comparisons: 'prev-this' is last week, 'prev-last' the one before.
@@ -169,6 +176,8 @@ function weekStats(r){
     const sorted=[...inW].sort((a,b)=>b.rating-a.rating); S.write={n:inW.length,avg:inW.length?inW.reduce((a,x)=>a+x.rating,0)/inW.length:null,best:sorted[0],worst:sorted.length>1?sorted.at(-1):null,byDay:Object.fromEntries(inW.map(x=>[x.written_on,x]))}; }
   if(data.read?.ok){ const inW=(data.read.v.logs||[]).filter(x=>inRange(x.read_on,r)); inW.forEach(x=>mark('read',x.read_on));
     const byDay={}; for(const x of inW) byDay[x.read_on]=(byDay[x.read_on]||0)+Number(x.pages); S.read={pages:inW.reduce((a,x)=>a+Number(x.pages),0),days:Object.keys(byDay).length,byDay}; }
+  if(data.sleep?.ok){ const {nights,goal}=data.sleep.v, inW=nights.filter(x=>inRange(x.night,r)); inW.forEach(x=>mark('sleep',x.night));
+    S.sleep={n:inW.length,avg:inW.length?inW.reduce((a,x)=>a+Number(x.asleep_min),0)/inW.length:null,met:inW.filter(x=>Number(x.asleep_min)>=goal*60).length,goal,byDay:Object.fromEntries(inW.map(x=>[x.night,x]))}; }
   return S;
 }
 // "+3" / "−2" against last week, green when it's the good direction.
@@ -179,7 +188,7 @@ function renderWeek(){
   document.querySelectorAll('[data-week]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.week===weekPick)));
   const r=weekRange(weekPick), fmtD=d=>parseDay(d).toLocaleDateString([], {month:'short',day:'numeric'});
   $('week-range').textContent=` · ${fmtD(r.start)} – ${fmtD(r.end)}`;
-  if(!user){ body.innerHTML='<p class="coach-empty">Sign in to see your week across all six apps.</p>'; return; }
+  if(!user){ body.innerHTML='<p class="coach-empty">Sign in to see your week across all seven apps.</p>'; return; }
   if(!Object.keys(data).length){ body.innerHTML='<p class="coach-empty">Loading your week…</p>'; return; }
   const S=weekStats(r), P=weekStats(weekRange(weekPick==='this'?'prev-this':'prev-last'));
   const card=(app,label,c,value,unit,note)=>`<div class="wcard" style="--c:${c}"><p>${label}</p><strong>${value}${unit?`<small>${unit}</small>`:''}</strong><small class="note">${note}</small></div>`;
@@ -191,12 +200,13 @@ function renderWeek(){
     off('meal')?card('meal','MEAL','#c9a7ff','—','','not set up'):card('meal','MEAL','#c9a7ff',S.meal.avg!=null?r0(S.meal.avg):'—',S.meal.avg!=null?'kcal/day':'',S.meal.logged?`${S.meal.onGoal} of ${S.meal.logged} logged days within ${r0(S.meal.goal)} · ${r0(S.meal.protein)} g protein`:'nothing logged this week'),
     off('write')?card('write','WRITE','#ffd98a','—','','not set up'):card('write','WRITE','#ffd98a',S.write.avg!=null?r1(S.write.avg):'—',S.write.avg!=null?'/10 avg':'',S.write.n?`best ${esc(shortDay(S.write.best.written_on))} ${S.write.best.rating}${S.write.worst?` · lowest ${esc(shortDay(S.write.worst.written_on))} ${S.write.worst.rating}`:''}${delta(S.write.avg,P.write?.avg,true,r1)}`:'no entries this week'),
     off('read')?card('read','READ','#ffb86b','—','','not set up'):card('read','READ','#ffb86b',String(S.read.pages),S.read.pages===1?'page':'pages',`${S.read.days} day${S.read.days===1?'':'s'} read${delta(S.read.pages,P.read?.pages,true)}`),
+    off('sleep')?card('sleep','SLEEP','#9aa8ff','—','','not set up'):card('sleep','SLEEP','#9aa8ff',S.sleep.avg!=null?esc(hm(S.sleep.avg)):'—',S.sleep.avg!=null?'a night':'',S.sleep.n?`${S.sleep.met} of ${S.sleep.n} night${S.sleep.n===1?'':'s'} at your ${esc(r1(S.sleep.goal))}h goal${delta(S.sleep.avg,P.sleep?.avg,true,m=>m<60?`${r0(m)} min`:hm(m))}`:'no nights recorded this week'),
   ].join('');
   const t=today(), full=r.days.filter(d=>d<=t&&WEEK_APPS.every(([a])=>off(a)||S.days[d][a])).length, counted=r.days.filter(d=>d<=t).length;
   const grid=`<div class="grid-wrap"><table class="wgrid"><caption class="sr-only" style="position:absolute;left:-9999px">Days logged per app</caption><thead><tr><th></th>${r.days.map(d=>`<th scope="col">${esc(shortDay(d)).slice(0,2)}</th>`).join('')}</tr></thead><tbody>${WEEK_APPS.filter(([a])=>!off(a)).map(([a,label,c])=>`<tr style="--c:${c}"><th scope="row">${label}</th>${r.days.map(d=>`<td class="${d>t?'future':''}"><i class="${S.days[d][a]?'on':''}" aria-label="${S.days[d][a]?'logged':'not logged'}"></i></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   const saved=loadReview(r.start);
   body.innerHTML=`<div class="week-cards">${cards}</div>${grid}<p class="week-note">${full} of ${counted} day${counted===1?'':'s'} with every app logged.</p>
-  <div class="week-review"><div class="wr-head"><h3 style="margin:0">Weekly review</h3><button class="quiet-button" id="week-ask" type="button"${weekBusy?' disabled':''}>${saved?'Write it again ↗':'Write my weekly review ↗'}</button></div><div id="week-review-body">${saved?reviewHtml(saved):`<p class="coach-empty" style="margin-top:10px">Claude reads this week across all six apps and tells you what went well, what to watch, and one connection between them. Nothing is sent until you press the button.</p>`}</div><p class="message${weekError?' error':''}" id="week-message" role="status" aria-live="polite">${weekBusy?'<span class="spinner"></span>Reading your week…':esc(weekError)}</p></div>`;
+  <div class="week-review"><div class="wr-head"><h3 style="margin:0">Weekly review</h3><button class="quiet-button" id="week-ask" type="button"${weekBusy?' disabled':''}>${saved?'Write it again ↗':'Write my weekly review ↗'}</button></div><div id="week-review-body">${saved?reviewHtml(saved):`<p class="coach-empty" style="margin-top:10px">Claude reads this week across all seven apps and tells you what went well, what to watch, and one connection between them. Nothing is sent until you press the button.</p>`}</div><p class="message${weekError?' error':''}" id="week-message" role="status" aria-live="polite">${weekBusy?'<span class="spinner"></span>Reading your week…':esc(weekError)}</p></div>`;
   $('week-ask').onclick=askWeek;
 }
 document.addEventListener('click',e=>{ const b=e.target.closest('[data-week]'); if(!b)return; weekPick=b.dataset.week; weekError=''; renderWeek(); });
@@ -211,6 +221,7 @@ function weekSummary(){
   if(S.meal) L.push(`MEAL: ${S.meal.logged} days logged, average ${S.meal.avg!=null?r0(S.meal.avg):'n/a'} kcal against a ${r0(S.meal.goal)} goal, ${S.meal.onGoal} days within it, protein ${S.meal.protein!=null?r0(S.meal.protein):'n/a'} g a day.`);
   if(S.write) L.push(`WRITE: ${S.write.n} entries, average rating ${S.write.avg!=null?r1(S.write.avg):'n/a'} (week before ${P.write?.avg!=null?r1(P.write.avg):'n/a'}).`);
   if(S.read) L.push(`READ: ${S.read.pages} pages on ${S.read.days} days (week before ${P.read?.pages??0} pages).`);
+  if(S.sleep) L.push(`SLEEP (Apple Health; each night is listed on the morning woken): ${S.sleep.n} nights, average ${S.sleep.avg!=null?hm(S.sleep.avg):'n/a'} asleep (week before ${P.sleep?.avg!=null?hm(P.sleep.avg):'n/a'}), ${S.sleep.met} at the ${r1(S.sleep.goal)} h goal.`);
   L.push('\nDay by day:');
   for(const d of r.days){ if(d>r.until) break; const x=[];
     if(S.body?.byDay[d]!=null) x.push(`weight ${S.body.byDay[d]}`);
@@ -219,6 +230,7 @@ function weekSummary(){
     if(S.meal?.byDay[d]) x.push(`ate ${r0(S.meal.byDay[d].c)} kcal, ${r0(S.meal.byDay[d].p)} g protein`);
     if(S.write?.byDay[d]){ const j=S.write.byDay[d]; x.push(`rated ${j.rating}/10${j.body?.trim()?` "${j.body.trim().slice(0,160).replace(/\s+/g,' ')}${j.body.length>160?'…':''}"`:''}`); }
     if(S.read?.byDay[d]) x.push(`read ${S.read.byDay[d]} pages`);
+    if(S.sleep?.byDay[d]){ const n=S.sleep.byDay[d]; x.push(`slept ${hm(n.asleep_min)} the night before (bed ${clock(n.bedtime)}, up ${clock(n.wake_time)})`); }
     L.push(`${d} (${shortDay(d)}): ${x.join('; ')||'nothing logged'}`); }
   return L.join('\n');
 }
@@ -238,7 +250,7 @@ async function askWeek(){
   finally{ weekBusy=false; renderWeek(); }
 }
 
-window.coach={app:'you',note:'The coach reads the last few weeks from all six apps, including short journal excerpts.',userId:async()=>user?.id||null,session:async()=>{ try{ const db=await connect(); const {data:{session}}=await db.auth.getSession(); return session?.access_token||null; }catch{ return null; } },summary:coachSummary};
+window.coach={app:'you',note:'The coach reads the last few weeks from all seven apps, including short journal excerpts.',userId:async()=>user?.id||null,session:async()=>{ try{ const db=await connect(); const {data:{session}}=await db.auth.getSession(); return session?.access_token||null; }catch{ return null; } },summary:coachSummary};
 // Show the score in the sidebar whenever the coach card renders one.
 new MutationObserver(()=>{ const s=document.querySelector('#coach .coach-score'); $('side-score').textContent=s?s.firstChild.textContent.trim():'—'; }).observe($('coach-body'),{childList:true,subtree:true});
 

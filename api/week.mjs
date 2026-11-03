@@ -1,9 +1,9 @@
-// Your weekly review. The browser sends one week across all six apps, day by day; Claude writes what went
+// Your weekly review. The browser sends one week across all seven apps, day by day; Claude writes what went
 // well, what to watch, one connection between the apps, and a focus for next week.
 // Runs on Vercel so the API key never reaches the browser. Only answers signed-in users.
 import Anthropic from '@anthropic-ai/sdk';
 
-const ROLE = `You are a calm, honest coach writing one person's weekly review across six logs: body weight, spending, training, food, a daily journal rating with notes, and reading. Compare the week with the one before where the data allows. Your most useful job is the connection the single-app coaches cannot see: a low-rated day that follows a skipped workout or a poor night of eating, spending that spikes on bad days, weight moving while food logging thins out, reading that stops when training stops. Only state a connection the days actually show; if none is clear, leave it empty rather than stretch. Name the apps and the days. Be warm and plain, never preachy. Do not give medical or financial advice. If the journal suggests crisis or self-harm, say gently that this is beyond what a weekly review can help with.`;
+const ROLE = `You are a calm, honest coach writing one person's weekly review across seven logs: body weight, spending, training, food, a daily journal rating with notes, reading, and sleep from Apple Health (each night is listed on the morning they woke). Compare the week with the one before where the data allows. Your most useful job is the connection the single-app coaches cannot see: a low-rated day that follows a skipped workout or a poor night of eating, spending that spikes on bad days, weight moving while food logging thins out, reading that stops when training stops, a short night before a low-rated day, a skipped workout, or a heavy-eating day. Only state a connection the days actually show; if none is clear, leave it empty rather than stretch. Name the apps and the days. Be warm and plain, never preachy. Do not give medical or financial advice. If the journal suggests crisis or self-harm, say gently that this is beyond what a weekly review can help with.`;
 
 const SCHEMA = {
   type: 'object',
