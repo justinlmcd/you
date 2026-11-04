@@ -29,6 +29,16 @@ Vercel redeploys on every push to `main`.
 
 **SLEEP** logs itself: the YOU watch app reads last night from Apple Health and uploads it, so its tile shows hours asleep, bed and wake times and your week's average against your goal, and its streak counts the nights recorded.
 
+## Weekly review on its own
+
+Every Sunday at 6 PM (or the hour you pick in **Settings → Weekly review**), YOU writes your weekly review by itself, so it's waiting under **Your week** when you open the app, and your phone gets **Your weekly review is ready**. It runs in Supabase, so it works with every app closed:
+
+- `supabase/functions/weekly-review`: an Edge Function that Supabase's scheduler calls every hour. On Sunday evening it reads your week from the apps' tables, has Claude write the review (same coach and wording as the button), saves it to `weekly_reviews`, and sends the notification. `review-core.js` is the week and its summary.
+- `weekly-review.sql`: the `weekly_reviews`, `push_subscriptions` and `push_keys` tables, and the hourly schedule (pg_cron).
+- `sw.js`: shows the notification and opens your week when you tap it.
+
+Set up once: deploy the function, add an **ANTHROPIC_API_KEY** secret in Supabase (**Edge Functions → Secrets**), run `weekly-review.sql`. Then, on your iPhone, open YOU from its Home Screen icon (Share → **Add to Home Screen** if it isn't there; iOS 16.4 or later), go to **Settings → Weekly review → Notifications → Turn on**, allow notifications, and **Send a test**. Reviews you write with the button are saved to your account too, so every device shows them.
+
 ## Goals
 
 **Your goals** (below the tiles, and in the sidebar) are targets that track themselves from what you already log:
