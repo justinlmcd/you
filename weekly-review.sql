@@ -50,7 +50,7 @@ alter table public.push_keys enable row level security;
 
 -- Every hour at :05, with the project's public anon key (the same one any page could use), ask the function whether anyone's Sunday review is due. It does nothing the rest of the week.
 create extension if not exists pg_cron;
-create extension if not exists pg_net;
+create extension if not exists pg_net with schema extensions;
 select cron.unschedule(jobid) from cron.job where jobname = 'weekly-review';
 select cron.schedule('weekly-review', '5 * * * *', $job$
   select net.http_post(
