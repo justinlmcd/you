@@ -19,7 +19,7 @@ create policy wr_write on public.weekly_reviews for insert to authenticated with
 create policy wr_edit on public.weekly_reviews for update to authenticated using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
 -- The devices you turned notifications on for.
-create table if not exists public.push_subscriptions (
+create table if not exists public.you_push_devices (
   endpoint text primary key,
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   p256dh text not null,
@@ -27,16 +27,16 @@ create table if not exists public.push_subscriptions (
   device text,
   created_at timestamptz not null default now()
 );
-create index if not exists push_subscriptions_user_idx on public.push_subscriptions (user_id);
-alter table public.push_subscriptions enable row level security;
-drop policy if exists ps_read on public.push_subscriptions;
-drop policy if exists ps_write on public.push_subscriptions;
-drop policy if exists ps_edit on public.push_subscriptions;
-drop policy if exists ps_remove on public.push_subscriptions;
-create policy ps_read on public.push_subscriptions for select to authenticated using (user_id = (select auth.uid()));
-create policy ps_write on public.push_subscriptions for insert to authenticated with check (user_id = (select auth.uid()));
-create policy ps_edit on public.push_subscriptions for update to authenticated using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
-create policy ps_remove on public.push_subscriptions for delete to authenticated using (user_id = (select auth.uid()));
+create index if not exists you_push_devices_user_idx on public.you_push_devices (user_id);
+alter table public.you_push_devices enable row level security;
+drop policy if exists ps_read on public.you_push_devices;
+drop policy if exists ps_write on public.you_push_devices;
+drop policy if exists ps_edit on public.you_push_devices;
+drop policy if exists ps_remove on public.you_push_devices;
+create policy ps_read on public.you_push_devices for select to authenticated using (user_id = (select auth.uid()));
+create policy ps_write on public.you_push_devices for insert to authenticated with check (user_id = (select auth.uid()));
+create policy ps_edit on public.you_push_devices for update to authenticated using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy ps_remove on public.you_push_devices for delete to authenticated using (user_id = (select auth.uid()));
 
 -- The keys notifications are signed with. Made by the function on first use; row security with no policies
 -- means only the function (with the service key) can read them.

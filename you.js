@@ -574,13 +574,13 @@ $('push-on').onclick=async()=>{
     if(await Notification.requestPermission()!=='granted'){ pushMsg('Notifications weren\'t allowed.','error'); return syncPush(); }
     const reg=swReg||await navigator.serviceWorker.ready; const {publicKey}=await reviewFn('key');
     const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(publicKey)}); const j=sub.toJSON();
-    const db=await connect(); const {error}=await db.from('push_subscriptions').upsert({endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth,device:navigator.userAgent.slice(0,160)},{onConflict:'endpoint'}); if(error) throw error;
+    const db=await connect(); const {error}=await db.from('you_push_devices').upsert({endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth,device:navigator.userAgent.slice(0,160)},{onConflict:'endpoint'}); if(error) throw error;
     pushMsg('On. Send a test to check it reaches you.');
   }catch(err){ pushMsg(err.message||'Could not turn on notifications.','error'); }
   syncPush();
 };
 $('push-test').onclick=async()=>{ pushMsg('Sending…'); try{ const {sent}=await reviewFn('test'); pushMsg(sent?'Sent. It should arrive in a few seconds.':'No device is signed up yet. Turn notifications on first.',sent?'':'error'); }catch(err){ pushMsg(err.message||'Could not send a test.','error'); } };
-$('push-off').onclick=async()=>{ try{ const sub=await swReg?.pushManager.getSubscription(); if(sub){ const db=await connect(); await db.from('push_subscriptions').delete().eq('endpoint',sub.endpoint); await sub.unsubscribe(); } pushMsg('Off for this device.'); }catch(err){ pushMsg(err.message||'Could not turn them off.','error'); } syncPush(); };
+$('push-off').onclick=async()=>{ try{ const sub=await swReg?.pushManager.getSubscription(); if(sub){ const db=await connect(); await db.from('you_push_devices').delete().eq('endpoint',sub.endpoint); await sub.unsubscribe(); } pushMsg('Off for this device.'); }catch(err){ pushMsg(err.message||'Could not turn them off.','error'); } syncPush(); };
 // Your account's copy wins when you sign in; after that, each change is saved to it.
 async function pullSettings(){
   if(!user)return; const id=loadId;

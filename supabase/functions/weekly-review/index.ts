@@ -47,7 +47,7 @@ async function vapid(): Promise<{ public_key: string; private_key: string }> {
 async function notify(userId: string, payload: { title: string; body: string; url: string }) {
   const keys = await vapid();
   webpush.setVapidDetails(SUPABASE_URL, keys.public_key, keys.private_key);
-  const { data: subs } = await admin.from("push_subscriptions").select("endpoint,p256dh,auth").eq("user_id", userId);
+  const { data: subs } = await admin.from("you_push_devices").select("endpoint,p256dh,auth").eq("user_id", userId);
   let sent = 0;
   for (const s of subs ?? []) {
     try {
@@ -55,7 +55,7 @@ async function notify(userId: string, payload: { title: string; body: string; ur
       sent++;
     } catch (e) {
       const code = (e as { statusCode?: number }).statusCode;
-      if (code === 404 || code === 410) await admin.from("push_subscriptions").delete().eq("endpoint", s.endpoint);
+      if (code === 404 || code === 410) await admin.from("you_push_devices").delete().eq("endpoint", s.endpoint);
       else console.error("push failed", code, (e as { body?: string }).body ?? String(e));
     }
   }
@@ -134,7 +134,7 @@ async function run() {
   const now = Date.now();
   const people = new Map<string, Record<string, unknown>>();
   for (const r of (await admin.from("user_settings").select("user_id,settings")).data ?? []) people.set(r.user_id, r.settings ?? {});
-  for (const r of (await admin.from("push_subscriptions").select("user_id")).data ?? []) if (!people.has(r.user_id)) people.set(r.user_id, {});
+  for (const r of (await admin.from("you_push_devices").select("user_id")).data ?? []) if (!people.has(r.user_id)) people.set(r.user_id, {});
   const report = { checked: people.size, written: 0, notified: 0, skipped: 0, failed: 0 };
   for (const [uid, settings] of people) {
     const d = due(now, settings);
