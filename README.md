@@ -19,6 +19,8 @@ Vercel redeploys on every push to `main`.
 ## What's in it
 
 - `index.html` — the page and its styles
+- `settings.js` — theme, accent, font, time zone, day end and units, applied before the page paints
+- `settings.sql` — the `user_settings` table that keeps your settings with your account
 - `you.js` — sign-in, one read per app, the seven numbers, and the cross-app coach summary
 - `api/week.mjs` — the Vercel function behind **Write my weekly review**
 - `coach.js` and `api/coach.mjs` — the coach card and the Vercel function behind it
@@ -26,6 +28,19 @@ Vercel redeploys on every push to `main`.
 - `quote-of-day.js` — a quote that changes at local midnight
 
 **SLEEP** logs itself: the YOU watch app reads last night from Apple Health and uploads it, so its tile shows hours asleep, bed and wake times and your week's average against your goal, and its streak counts the nights recorded.
+
+## Settings
+
+**Settings** (top right, or in the sidebar) changes:
+
+- **Theme**: System (follows your phone or computer), Dark or Light.
+- **Accent**: Stone, Mint, Sky, Lilac, Peach, Rose or Gold, for buttons, links and highlights. Each app's tile keeps its own colour.
+- **Font**: Default, System, Rounded, Serif or Mono, all fonts already on your device.
+- **Time zone**: automatic, or any time zone, for which day it is and the times shown.
+- **Day ends at**: midnight to 6 AM. If you're up past midnight, logs before this time count toward the day before, so today's count and your streaks don't roll over until you've gone to bed. Logs the other apps dated after midnight are counted toward your day too.
+- **Units**: weight in lbs or kg (BODY weigh-ins are converted), and height and distance in ft and mi or m and km.
+
+Changes apply straight away and are saved on the device. Run [settings.sql](settings.sql) once in Supabase and they're also saved to your account, so they follow you to your other devices.
 
 ## Your week
 

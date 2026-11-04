@@ -4,8 +4,13 @@
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const APPS=['body','money','gym','meal','write','read','sleep'];
+// Settings (settings.js): your time zone, when your day ends, and units.
+const SET=window.youSettings;
+// Calendar arithmetic on YYYY-MM-DD strings, independent of any setting.
 const isoDay=d=>{ const x=new Date(d); return new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,10); };
-const today=()=>isoDay(new Date());
+// The day a logged moment belongs to, and today, in your time zone with your day-end hour.
+const dayOf=ts=>SET.dayOf(ts);
+const today=()=>SET.dayOf(Date.now());
 const parseDay=s=>{ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
 const addDays=(s,n)=>isoDay(new Date(parseDay(s).getTime()+n*86400000+3600000*6));
 const weekStart=s=>addDays(s,-((parseDay(s).getDay()+6)%7));
@@ -14,7 +19,9 @@ const r0=n=>String(Math.round(Number(n)||0)); const r1=n=>{ const v=Math.round((
 const currency=new Intl.NumberFormat([], {style:'currency',currency:'USD',maximumFractionDigits:0});
 // "7h 05m" from minutes asleep; clock time from a timestamp.
 const hm=m=>{ m=Math.round(Number(m)||0); return `${Math.floor(m/60)}h ${String(m%60).padStart(2,'0')}m`; };
-const clock=ts=>new Date(ts).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+const clock=ts=>SET.clock(ts);
+// A BODY weigh-in in the weight unit you chose.
+const wt=r=>SET.weight(r.value,r.unit);
 const WORDS={1:'Awful',2:'Rough',3:'Bad',4:'Meh',5:'Okay',6:'Fine',7:'Good',8:'Great',9:'Excellent',10:'Perfect'};
 
 let client=null,user=null,busy=false,authSub=null,connecting=null,storageCleanup=null,urls={},loadId=0;
@@ -52,7 +59,7 @@ function setUser(next){
   user=next; loadId++;
   $('connect-open').hidden=!!user; $('sign-out').hidden=!user; $('refresh').hidden=!user;
   $('connection-status').textContent=user?'Connected':'Your record'; $('connection-status').classList.toggle('connected',!!user);
-  if(!user){ data={}; render(); } else load();
+  if(!user){ data={}; settingsState='local'; render(); syncSettingsView(); } else { load(); pullSettings(); }
   window.coachUser?.(user?.id);
 }
 $('connect-open').onclick=()=>{ $('connection-dialog').showModal(); $('email').focus(); };
@@ -85,7 +92,20 @@ async function load(){
   const results=await Promise.allSettled(APPS.map(a=>reads[a]()));
   if(id!==loadId)return;
   data={}; for(let i=0;i<APPS.length;i++){ const r=results[i]; data[APPS[i]]=r.status==='fulfilled'?{ok:true,v:r.value}:{ok:false,err:r.reason?.message||'unavailable'}; }
+  lateNight(data);
   render();
+}
+
+// The other apps date a log by the calendar, so with "day ends at 3 AM" a set logged at 12:40 AM arrives dated
+// tomorrow. Until your day ends, anything dated the calendar's today counts toward your day instead.
+function lateNight(d){
+  const t=today(), cal=new Date().toLocaleDateString('en-CA',{timeZone:SET.get().timeZone||undefined}); if(cal===t) return;
+  const fix=(rows,k)=>{ for(const r of rows||[]) if(r[k]===cal) r[k]=t; };
+  if(d.money?.ok) fix(d.money.v.tx,'occurred_on');
+  if(d.gym?.ok){ fix(d.gym.v.sets,'performed_on'); fix(d.gym.v.cardio,'performed_on'); }
+  if(d.meal?.ok) fix(d.meal.v.entries,'eaten_on');
+  if(d.write?.ok) fix(d.write.v,'written_on');
+  if(d.read?.ok) fix(d.read.v.logs,'read_on');
 }
 
 // ---- one number per app ----
@@ -93,9 +113,9 @@ function tile(app,value,note,label,unit){ $(app+'-value').innerHTML=esc(value)+(
 function notSetUp(app,what){ const d=data[app]; if(!d) { tile(app,'—','Sign in to see this.'); return true; } if(!d.ok){ const missing=/relation .* does not exist|schema cache/i.test(d.err); tile(app,'—',missing?`${what} not set up yet.`:'Could not load.'); return true; } return false; }
 let loggedToday=0;
 function render(){
-  const t=today(); loggedToday=0; $('date-label').textContent=new Date().toLocaleDateString([], {weekday:'long',month:'long',day:'numeric'});
+  const t=today(); loggedToday=0; $('date-label').textContent=parseDay(t).toLocaleDateString([], {weekday:'long',month:'long',day:'numeric'});
   // BODY: latest weight and the move since last week
-  if(!notSetUp('body','BODY')){ const w=data.body.v; if(!w.length) tile('body','—','No readings yet.','weight'); else { const latest=w[0]; const d=latest.occurred_at.slice(0,10); const weekAgo=w.find(r=>r.occurred_at.slice(0,10)<=addDays(d,-6)); const diff=weekAgo?Number(latest.value)-Number(weekAgo.value):null; tile('body',r1(latest.value),`${d===t?'today':shortDate(d)}${diff!==null?` · ${diff>0?'+':''}${r1(diff)} ${latest.unit} vs a week ago`:''}`,'weight',latest.unit); if(d===t) loggedToday++; } }
+  if(!notSetUp('body','BODY')){ const w=data.body.v; if(!w.length) tile('body','—','No readings yet.','weight'); else { const latest=w[0], now=wt(latest); const d=dayOf(latest.occurred_at); const weekAgo=w.find(r=>dayOf(r.occurred_at)<=addDays(d,-6)); const diff=weekAgo?now.value-wt(weekAgo).value:null; tile('body',r1(now.value),`${d===t?'today':shortDate(d)}${diff!==null?` · ${diff>0?'+':''}${r1(diff)} ${now.unit} vs a week ago`:''}`,'weight',now.unit); if(d===t) loggedToday++; } }
   // MONEY: spent this month
   if(!notSetUp('money','MONEY')){ const {tx,subs}=data.money.v; const ms=t.slice(0,8)+'01'; const month=tx.filter(r=>r.occurred_on>=ms); const tot=month.reduce((a,r)=>a+Number(r.amount),0); const todayTot=tx.filter(r=>r.occurred_on===t).reduce((a,r)=>a+Number(r.amount),0); const subM=subs.filter(s=>s.active).reduce((a,s)=>a+(s.cadence==='yearly'?Number(s.amount)/12:s.cadence==='weekly'?Number(s.amount)*52/12:Number(s.amount)),0); tile('money',currency.format(tot),`this month · ${todayTot?currency.format(todayTot)+' today':'nothing today'} · ${currency.format(subM)} in subscriptions`,'spent'); if(todayTot) loggedToday++; }
   // GYM: workouts this week
@@ -109,7 +129,7 @@ function render(){
   // SLEEP: last night from Apple Health, against your goal. It logs itself, so a night recorded this morning counts as today.
   if(!notSetUp('sleep','SLEEP')){ const {nights,goal}=data.sleep.v; const last=nights[0]; if(!last) tile('sleep','—','No nights yet. Wear your watch to bed with Sleep on.','asleep'); else { const wk=nights.filter(n=>n.night>addDays(t,-7)); const avg=wk.length?wk.reduce((a,n)=>a+Number(n.asleep_min),0)/wk.length:null; tile('sleep',hm(last.asleep_min),`${last.night===t?'last night':`night before ${shortDate(last.night)}`} · ${clock(last.bedtime)} → ${clock(last.wake_time)}${avg!=null?` · ${hm(avg)} avg vs ${r1(goal)}h goal`:''}`,'asleep'); if(last.night===t) loggedToday++; } }
   // Streaks: days in a row with something logged in each app. READ counts days with pages logged, SLEEP nights recorded.
-  const DAYS={ body:v=>v.map(r=>isoDay(r.occurred_at)), money:v=>v.tx.map(r=>r.occurred_on), gym:v=>v.sets.map(s=>s.performed_on).concat((v.cardio||[]).map(c=>c.performed_on)), meal:v=>v.entries.map(r=>r.eaten_on), write:v=>v.map(r=>r.written_on), read:v=>v.logs.map(l=>l.read_on), sleep:v=>v.nights.map(n=>n.night) };
+  const DAYS={ body:v=>v.map(r=>dayOf(r.occurred_at)), money:v=>v.tx.map(r=>r.occurred_on), gym:v=>v.sets.map(s=>s.performed_on).concat((v.cardio||[]).map(c=>c.performed_on)), meal:v=>v.entries.map(r=>r.eaten_on), write:v=>v.map(r=>r.written_on), read:v=>v.logs.map(l=>l.read_on), sleep:v=>v.nights.map(n=>n.night) };
   const FROM={body:-89,money:-59,gym:-59,meal:-59,write:-59,read:-59,sleep:-59};
   for(const app in DAYS) streak(app,data[app]?.ok?DAYS[app](data[app].v):null,addDays(t,FROM[app]));
   const signed=!!user; const apps=APPS.filter(a=>data[a]?.ok).length;
@@ -132,7 +152,7 @@ function streak(app,days,since){
 function coachSummary(){
   const t=today(); const L=[]; const since=addDays(t,-27);
   const dayLine={}; const add=(d,s)=>{ if(d>=since) dayLine[d]=(dayLine[d]||[]).concat(s); };
-  if(data.body?.ok){ const w=data.body.v; L.push(`BODY: ${w.length} weight readings in 90 days.${w[0]?` Latest ${w[0].value} ${w[0].unit} on ${w[0].occurred_at.slice(0,10)}.`:''}`); for(const r of w) add(r.occurred_at.slice(0,10),`weight ${r.value}${r.unit}`); }
+  if(data.body?.ok){ const w=data.body.v; L.push(`BODY: ${w.length} weight readings in 90 days.${w[0]?` Latest ${r1(wt(w[0]).value)} ${wt(w[0]).unit} on ${dayOf(w[0].occurred_at)}.`:''}`); for(const r of w) add(dayOf(r.occurred_at),`weight ${r1(wt(r).value)}${wt(r).unit}`); }
   if(data.money?.ok){ const {tx,subs}=data.money.v; const ms=t.slice(0,8)+'01'; L.push(`MONEY: ${currency.format(tx.filter(r=>r.occurred_on>=ms).reduce((a,r)=>a+Number(r.amount),0))} this month, ${currency.format(tx.filter(r=>r.occurred_on>=since).reduce((a,r)=>a+Number(r.amount),0))} in 28 days. Subscriptions: ${subs.filter(s=>s.active).map(s=>`${s.name} ${currency.format(s.amount)}/${s.cadence}`).join(', ')||'none'}.`); const byDay={}; for(const r of tx){ byDay[r.occurred_on]=(byDay[r.occurred_on]||0)+Number(r.amount); } for(const [d,v] of Object.entries(byDay)) add(d,`spent ${currency.format(v)}`); }
   if(data.gym?.ok){ const {sets,exercises}=data.gym.v; const name=id=>exercises.find(e=>e.id===id)?.name||'exercise'; const byDay={}; for(const s of sets){ byDay[s.performed_on]=byDay[s.performed_on]||new Set(); byDay[s.performed_on].add(name(s.exercise_id)); } L.push(`GYM: ${Object.keys(byDay).length} lifting days in 60 days.`); for(const [d,ex] of Object.entries(byDay)) add(d,`trained ${[...ex].join('/')}`); for(const c of (data.gym.v.cardio||[])) add(c.performed_on,`cardio ${c.kind} ${Math.round(c.minutes)} min${c.calories!=null?` ${Math.round(c.calories)} kcal`:''}`); }
   if(data.meal?.ok){ const {goals}=data.meal.v; const entries=data.meal.v.entries.filter(r=>r.eaten_on>=addDays(t,-13)); const goal=goals?Number(goals.calories):2000; const byDay={}; for(const r of entries){ byDay[r.eaten_on]=byDay[r.eaten_on]||{c:0,p:0}; byDay[r.eaten_on].c+=Number(r.calories); byDay[r.eaten_on].p+=Number(r.protein); } L.push(`MEAL: goal ${r0(goal)} kcal/day${goals?`, protein ${r0(goals.protein)} g`:''}. ${Object.keys(byDay).length} of the last 14 days logged.`); for(const [d,v] of Object.entries(byDay)) add(d,`ate ${r0(v.c)} kcal (P ${r0(v.p)}g)${v.c>goal?' OVER goal':''}`); }
@@ -145,13 +165,13 @@ function coachSummary(){
 }
 // ---- your week: each app's week against the week before, the days you logged, and a review on request ----
 let weekPick=null, weekBusy=false, weekError='';
-const WEEK_APPS=[['body','BODY','#8fd3ff'],['money','MONEY','#8fe3b0'],['gym','GYM','#ff9b9b'],['meal','MEAL','#c9a7ff'],['write','WRITE','#ffd98a'],['read','READ','#ffb86b'],['sleep','SLEEP','#9aa8ff']];
+const WEEK_APPS=[['body','BODY','var(--app-body)'],['money','MONEY','var(--app-money)'],['gym','GYM','var(--app-gym)'],['meal','MEAL','var(--app-meal)'],['write','WRITE','var(--app-write)'],['read','READ','var(--app-read)'],['sleep','SLEEP','var(--app-sleep)']];
 // Last week, or this week on a Sunday when it's almost done.
 const defaultWeek=()=>parseDay(today()).getDay()===0?'this':'last';
 // 'this' and 'last', plus the week before each for comparisons: 'prev-this' is last week, 'prev-last' the one before.
 function weekRange(which){ const cur=weekStart(today()), back={this:0,last:7,'prev-this':7,'prev-last':14}[which]??7, start=addDays(cur,-back), end=addDays(start,6); return {start,end,until:end<today()?end:today(),days:Array.from({length:7},(_,i)=>addDays(start,i))}; }
 const inRange=(d,r)=>d>=r.start&&d<=r.end;
-const bodyDay=r=>isoDay(r.occurred_at);
+const bodyDay=r=>dayOf(r.occurred_at);
 const fmtMoney=n=>currency.format(Math.round(n));
 // Everything about one week that the cards, the grid and the review need.
 function weekStats(r){
@@ -159,7 +179,7 @@ function weekStats(r){
   const mark=(app,d)=>{ if(S.days[d]) S.days[d][app]=true; };
   if(data.body?.ok){ const all=data.body.v, inW=all.filter(x=>inRange(bodyDay(x),r)).sort((a,b)=>a.occurred_at<b.occurred_at?-1:1), before=all.filter(x=>bodyDay(x)<r.start).sort((a,b)=>a.occurred_at<b.occurred_at?1:-1)[0];
     inW.forEach(x=>mark('body',bodyDay(x))); const last=inW.at(-1), base=before||inW[0];
-    S.body={n:inW.length,last:last?Number(last.value):null,unit:last?.unit||base?.unit||'',change:last&&base&&base!==last?Number(last.value)-Number(base.value):null,byDay:Object.fromEntries(inW.map(x=>[bodyDay(x),Number(x.value)]))}; }
+    S.body={n:inW.length,last:last?wt(last).value:null,unit:SET.get().weight,change:last&&base&&base!==last?wt(last).value-wt(base).value:null,byDay:Object.fromEntries(inW.map(x=>[bodyDay(x),r1(wt(x).value)]))}; }
   if(data.money?.ok){ const {tx,budget,debts=[]}=data.money.v, inW=tx.filter(x=>inRange(x.occurred_on,r)); inW.forEach(x=>mark('money',x.occurred_on));
     const plan=(budget?.allocations||[]).filter(a=>a.kind==='need'||a.kind==='want').reduce((a,x)=>a+Number(x.amount),0);
     const byDay={}; for(const x of inW) byDay[x.occurred_on]=(byDay[x.occurred_on]||0)+Number(x.amount);
@@ -194,13 +214,13 @@ function renderWeek(){
   const card=(app,label,c,value,unit,note)=>`<div class="wcard" style="--c:${c}"><p>${label}</p><strong>${value}${unit?`<small>${unit}</small>`:''}</strong><small class="note">${note}</small></div>`;
   const off=app=>!data[app]?.ok;
   const cards=[
-    off('body')?card('body','BODY','#8fd3ff','—','','not set up'):S.body.change!=null?card('body','BODY','#8fd3ff',`${S.body.change>0?'+':S.body.change<0?'−':''}${r1(Math.abs(S.body.change))}`,esc(S.body.unit),`now ${r1(S.body.last)} ${esc(S.body.unit)} · ${S.body.n} reading${S.body.n===1?'':'s'}`):card('body','BODY','#8fd3ff',S.body.n?r1(S.body.last):'—',S.body.n?esc(S.body.unit):'',S.body.n?`${S.body.n} reading this week`:'no readings this week'),
-    off('money')?card('money','MONEY','#8fe3b0','—','','not set up'):card('money','MONEY','#8fe3b0',esc(fmtMoney(S.money.spent)),'spent',(S.money.weekBudget?`${S.money.spent<=S.money.weekBudget?`${esc(fmtMoney(S.money.weekBudget-S.money.spent))} under`:`<span class="down">${esc(fmtMoney(S.money.spent-S.money.weekBudget))} over</span>`} your ${esc(fmtMoney(S.money.weekBudget))} week`:'this week')+delta(S.money.spent,P.money?.spent,false,fmtMoney)+(S.money.hasDebts?` · ${esc(fmtMoney(S.money.debt))} debt left`:'')),
-    off('gym')?card('gym','GYM','#ff9b9b','—','','not set up'):card('gym','GYM','#ff9b9b',String(S.gym.days),S.gym.days===1?'workout':'workouts',`${S.gym.sets} sets${S.gym.cardioMin?` · ${r0(S.gym.cardioMin)} min cardio`:''}${delta(S.gym.days,P.gym?.days,true)}`),
-    off('meal')?card('meal','MEAL','#c9a7ff','—','','not set up'):card('meal','MEAL','#c9a7ff',S.meal.avg!=null?r0(S.meal.avg):'—',S.meal.avg!=null?'kcal/day':'',S.meal.logged?`${S.meal.onGoal} of ${S.meal.logged} logged days within ${r0(S.meal.goal)} · ${r0(S.meal.protein)} g protein`:'nothing logged this week'),
-    off('write')?card('write','WRITE','#ffd98a','—','','not set up'):card('write','WRITE','#ffd98a',S.write.avg!=null?r1(S.write.avg):'—',S.write.avg!=null?'/10 avg':'',S.write.n?`best ${esc(shortDay(S.write.best.written_on))} ${S.write.best.rating}${S.write.worst?` · lowest ${esc(shortDay(S.write.worst.written_on))} ${S.write.worst.rating}`:''}${delta(S.write.avg,P.write?.avg,true,r1)}`:'no entries this week'),
-    off('read')?card('read','READ','#ffb86b','—','','not set up'):card('read','READ','#ffb86b',String(S.read.pages),S.read.pages===1?'page':'pages',`${S.read.days} day${S.read.days===1?'':'s'} read${delta(S.read.pages,P.read?.pages,true)}`),
-    off('sleep')?card('sleep','SLEEP','#9aa8ff','—','','not set up'):card('sleep','SLEEP','#9aa8ff',S.sleep.avg!=null?esc(hm(S.sleep.avg)):'—',S.sleep.avg!=null?'a night':'',S.sleep.n?`${S.sleep.met} of ${S.sleep.n} night${S.sleep.n===1?'':'s'} at your ${esc(r1(S.sleep.goal))}h goal${delta(S.sleep.avg,P.sleep?.avg,true,m=>m<60?`${r0(m)} min`:hm(m))}`:'no nights recorded this week'),
+    off('body')?card('body','BODY','var(--app-body)','—','','not set up'):S.body.change!=null?card('body','BODY','var(--app-body)',`${S.body.change>0?'+':S.body.change<0?'−':''}${r1(Math.abs(S.body.change))}`,esc(S.body.unit),`now ${r1(S.body.last)} ${esc(S.body.unit)} · ${S.body.n} reading${S.body.n===1?'':'s'}`):card('body','BODY','var(--app-body)',S.body.n?r1(S.body.last):'—',S.body.n?esc(S.body.unit):'',S.body.n?`${S.body.n} reading this week`:'no readings this week'),
+    off('money')?card('money','MONEY','var(--app-money)','—','','not set up'):card('money','MONEY','var(--app-money)',esc(fmtMoney(S.money.spent)),'spent',(S.money.weekBudget?`${S.money.spent<=S.money.weekBudget?`${esc(fmtMoney(S.money.weekBudget-S.money.spent))} under`:`<span class="down">${esc(fmtMoney(S.money.spent-S.money.weekBudget))} over</span>`} your ${esc(fmtMoney(S.money.weekBudget))} week`:'this week')+delta(S.money.spent,P.money?.spent,false,fmtMoney)+(S.money.hasDebts?` · ${esc(fmtMoney(S.money.debt))} debt left`:'')),
+    off('gym')?card('gym','GYM','var(--app-gym)','—','','not set up'):card('gym','GYM','var(--app-gym)',String(S.gym.days),S.gym.days===1?'workout':'workouts',`${S.gym.sets} sets${S.gym.cardioMin?` · ${r0(S.gym.cardioMin)} min cardio`:''}${delta(S.gym.days,P.gym?.days,true)}`),
+    off('meal')?card('meal','MEAL','var(--app-meal)','—','','not set up'):card('meal','MEAL','var(--app-meal)',S.meal.avg!=null?r0(S.meal.avg):'—',S.meal.avg!=null?'kcal/day':'',S.meal.logged?`${S.meal.onGoal} of ${S.meal.logged} logged days within ${r0(S.meal.goal)} · ${r0(S.meal.protein)} g protein`:'nothing logged this week'),
+    off('write')?card('write','WRITE','var(--app-write)','—','','not set up'):card('write','WRITE','var(--app-write)',S.write.avg!=null?r1(S.write.avg):'—',S.write.avg!=null?'/10 avg':'',S.write.n?`best ${esc(shortDay(S.write.best.written_on))} ${S.write.best.rating}${S.write.worst?` · lowest ${esc(shortDay(S.write.worst.written_on))} ${S.write.worst.rating}`:''}${delta(S.write.avg,P.write?.avg,true,r1)}`:'no entries this week'),
+    off('read')?card('read','READ','var(--app-read)','—','','not set up'):card('read','READ','var(--app-read)',String(S.read.pages),S.read.pages===1?'page':'pages',`${S.read.days} day${S.read.days===1?'':'s'} read${delta(S.read.pages,P.read?.pages,true)}`),
+    off('sleep')?card('sleep','SLEEP','var(--app-sleep)','—','','not set up'):card('sleep','SLEEP','var(--app-sleep)',S.sleep.avg!=null?esc(hm(S.sleep.avg)):'—',S.sleep.avg!=null?'a night':'',S.sleep.n?`${S.sleep.met} of ${S.sleep.n} night${S.sleep.n===1?'':'s'} at your ${esc(r1(S.sleep.goal))}h goal${delta(S.sleep.avg,P.sleep?.avg,true,m=>m<60?`${r0(m)} min`:hm(m))}`:'no nights recorded this week'),
   ].join('');
   const t=today(), full=r.days.filter(d=>d<=t&&WEEK_APPS.every(([a])=>off(a)||S.days[d][a])).length, counted=r.days.filter(d=>d<=t).length;
   const grid=`<div class="grid-wrap"><table class="wgrid"><caption class="sr-only" style="position:absolute;left:-9999px">Days logged per app</caption><thead><tr><th></th>${r.days.map(d=>`<th scope="col">${esc(shortDay(d)).slice(0,2)}</th>`).join('')}</tr></thead><tbody>${WEEK_APPS.filter(([a])=>!off(a)).map(([a,label,c])=>`<tr style="--c:${c}"><th scope="row">${label}</th>${r.days.map(d=>`<td class="${d>t?'future':''}"><i class="${S.days[d][a]?'on':''}" aria-label="${S.days[d][a]?'logged':'not logged'}"></i></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
@@ -249,6 +269,56 @@ async function askWeek(){
   }catch(err){ weekError=err.message||'The review could not be written.'; }
   finally{ weekBusy=false; renderWeek(); }
 }
+
+// ---- settings tab ----
+const DAY_END_LABEL=h=>h===0?'Midnight':`${h}:00 AM`;
+let settingsState='local', pushTimer=null;
+function settingsSummary(){ const v=SET.get(); return `${{system:'System',dark:'Dark',light:'Light'}[v.theme]} · ${v.weight}`; }
+function buildSettings(){
+  $('set-accents').innerHTML=Object.entries(SET.ACCENTS).map(([k,[name]])=>`<button type="button" class="swatch" data-set="accent" data-value="${k}" aria-label="${name}" title="${name}"></button>`).join('');
+  $('set-fonts').innerHTML=Object.entries(SET.FONTS).map(([k,[name,stack]])=>`<button type="button" class="font-opt" data-set="font" data-value="${k}" style="font-family:${esc(stack)}"><span>Aa</span>${name}</button>`).join('');
+  const device=Intl.DateTimeFormat().resolvedOptions().timeZone; let zones=[]; try{ zones=Intl.supportedValuesOf('timeZone'); }catch{} if(!zones.includes(device)) zones.unshift(device);
+  const saved=SET.get().timeZone; if(saved&&!zones.includes(saved)) zones.unshift(saved);
+  $('set-tz').innerHTML=`<option value="">Automatic · ${esc(device.replace(/_/g,' '))}</option>`+zones.map(z=>`<option value="${esc(z)}">${esc(z.replace(/_/g,' '))}</option>`).join('');
+  $('set-dayend').innerHTML=[0,1,2,3,4,5,6].map(h=>`<option value="${h}">${DAY_END_LABEL(h)}</option>`).join('');
+  syncSettingsView();
+}
+function syncSettingsView(){
+  const v=SET.get(), m=SET.mode();
+  document.querySelectorAll('[data-set]').forEach(b=>b.setAttribute('aria-pressed',String(String(v[b.dataset.set])===b.dataset.value)));
+  document.querySelectorAll('.swatch').forEach(b=>b.style.setProperty('--sw',SET.accentColor(b.dataset.value,m)));
+  $('set-tz').value=v.timeZone; $('set-dayend').value=String(v.dayEnds);
+  const now=new Date(), t=today(), cal=now.toLocaleDateString('en-CA',{timeZone:v.timeZone||undefined});
+  $('set-now').innerHTML=`Right now it's <b>${esc(now.toLocaleString([], {timeZone:v.timeZone||undefined,weekday:'short',hour:'numeric',minute:'2-digit'}))}</b> in ${esc(SET.zone().replace(/_/g,' '))}${cal!==t?`, which still counts as <b>${esc(parseDay(t).toLocaleDateString([], {weekday:'long',month:'short',day:'numeric'}))}</b> until ${DAY_END_LABEL(v.dayEnds)}`:''}.`;
+  $('side-settings').textContent=settingsSummary();
+  $('settings-sync').textContent=!user?'Saved on this device. Sign in to keep them with your account.':settingsState==='account'?'Saved to your account, so they follow you to other devices.':settingsState==='missing'?'Saved on this device. Run settings.sql in Supabase to keep them with your account.':settingsState==='error'?'Saved on this device; could not reach your account just now.':'Saved on this device.';
+}
+document.addEventListener('click',e=>{ const b=e.target.closest('[data-set]'); if(!b)return; const k=b.dataset.set; SET.set({[k]:b.dataset.value}); });
+$('set-tz').onchange=e=>SET.set({timeZone:e.target.value});
+$('set-dayend').onchange=e=>SET.set({dayEnds:Number(e.target.value)});
+// Your account's copy wins when you sign in; after that, each change is saved to it.
+async function pullSettings(){
+  if(!user)return; const id=loadId;
+  try{ const db=await connect(); const {data:row,error}=await db.from('user_settings').select('settings').maybeSingle(); if(error)throw error; if(id!==loadId)return;
+    if(row) SET.replace({...SET.get(),...row.settings}); else await pushSettings(); settingsState='account'; }
+  catch(err){ settingsState=/relation .* does not exist|schema cache|could not find the table/i.test(err.message||'')?'missing':'error'; }
+  syncSettingsView();
+}
+async function pushSettings(){
+  if(!user)return; const db=await connect();
+  const {error}=await db.from('user_settings').upsert({user_id:user.id,settings:SET.get(),updated_at:new Date().toISOString()},{onConflict:'user_id'}); if(error)throw error;
+}
+SET.on((v,keys,remote)=>{
+  syncSettingsView();
+  if(user&&keys.some(k=>k==='timeZone'||k==='dayEnds')) load(); else if(user&&keys.includes('weight')) render();
+  if(!remote&&user&&settingsState!=='missing'){ clearTimeout(pushTimer); pushTimer=setTimeout(()=>pushSettings().then(()=>{ settingsState='account'; },()=>{ settingsState='error'; }).finally(syncSettingsView),400); }
+});
+// The Settings tab: #settings swaps the page for the settings, anything else shows the overview.
+function route(){ const on=location.hash==='#settings'; document.body.classList.toggle('in-settings',on); $('settings').hidden=!on;
+  document.querySelectorAll('.sidebar .area-link').forEach(a=>{ if(a.getAttribute('href')===(on?'#settings':'#you')) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  if(on){ syncSettingsView(); window.scrollTo(0,0); } }
+window.addEventListener('hashchange',route);
+buildSettings(); route();
 
 window.coach={app:'you',note:'The coach reads the last few weeks from all seven apps, including short journal excerpts.',userId:async()=>user?.id||null,session:async()=>{ try{ const db=await connect(); const {data:{session}}=await db.auth.getSession(); return session?.access_token||null; }catch{ return null; } },summary:coachSummary};
 // Show the score in the sidebar whenever the coach card renders one.
