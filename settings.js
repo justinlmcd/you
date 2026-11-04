@@ -1,9 +1,11 @@
-// YOU settings: theme, accent, font, time zone, when your day ends, and units.
-// Loaded in <head> so the theme, accent and font are applied before the page paints, from this device's copy.
-// When you're signed in, you.js keeps that copy in step with your account (the user_settings table),
-// so other devices and, later, the other apps can follow the same settings.
+// YOU settings: theme, accent, font, time zone, when your day ends, and units. The same file runs in every app.
+// Loaded in <head> so the theme and font are applied before the page paints, from this device's copy.
+// You change them in YOU's Settings tab, which saves them to your account (the user_settings table);
+// each app reads them from there when you sign in (sync) and keeps a copy for next time.
+// With data-accent="own" (every app but YOU) the app keeps its own colour instead of YOU's accent.
 (function(){
 'use strict';
+const SCRIPT=document.currentScript, OWN_ACCENT=!!(SCRIPT&&SCRIPT.dataset.accent==='own');
 const KEY='you.settings';
 const DEFAULTS={theme:'system',accent:'stone',font:'default',timeZone:'',dayEnds:0,weight:'lbs',length:'imperial'};
 // Each accent: its name, then the tone on dark and on light (darker, so it reads on a light page).
@@ -33,10 +35,9 @@ const accentColor=(name,m)=>ACCENTS[name][m==='light'?2:1];
 function apply(){
   const root=document.documentElement, m=mode();
   root.dataset.theme=m;
-  root.style.setProperty('--mint',accentColor(s.accent,m));
-  root.style.setProperty('--accent',accentColor(s.accent,m));
+  if(!OWN_ACCENT){ root.style.setProperty('--mint',accentColor(s.accent,m)); root.style.setProperty('--accent',accentColor(s.accent,m)); }
   root.style.setProperty('--sans',FONTS[s.font][1]);
-  const meta=document.querySelector('meta[name="theme-color"]'); if(meta) meta.content=m==='light'?'#f6f5f1':'#0a0a0b';
+  const meta=document.querySelector('meta[name="theme-color"]'); if(meta) meta.content=(OWN_ACCENT&&getComputedStyle(root).getPropertyValue('--bg').trim())||(m==='light'?'#f6f5f1':'#0a0a0b');
 }
 
 const listeners=[];
@@ -69,6 +70,12 @@ function weight(value,unit){
   return {value:n,unit:s.weight};
 }
 
-window.youSettings={get:()=>s,set,replace,on:f=>listeners.push(f),mode,dayOf,clock,weight,zone,accentColor,DEFAULTS,ACCENTS,FONTS};
+// Reads your settings from your account (signed in, with this app's Supabase client) and applies them.
+async function sync(db){
+  try{ const {data,error}=await db.from('user_settings').select('settings').maybeSingle(); if(error) return false; if(data&&data.settings) replace({...s,...data.settings}); return true; }
+  catch{ return false; }
+}
+
+window.youSettings={get:()=>s,set,replace,sync,on:f=>listeners.push(f),mode,dayOf,clock,weight,zone,accentColor,DEFAULTS,ACCENTS,FONTS};
 apply();
 })();
