@@ -2,7 +2,7 @@
 
 One page for all seven apps: BODY, MONEY, GYM, MEAL, WRITE, READ and SLEEP. Each tile shows one live number from that app and opens it. A coach at the bottom reads the last few weeks from every app at once and points out the connections the single-app coaches cannot see: the bad journal days that line up with skipped workouts, the spending that spikes on low days, the weight that moves when food logging thins out, the short nights before low days.
 
-Nothing is written from here. YOU only reads the tables the other apps write, on the same login.
+YOU reads the tables the other apps write, on the same login. The only things it writes are your goals and your settings.
 
 ## Set up (about 10 minutes)
 
@@ -28,6 +28,19 @@ Vercel redeploys on every push to `main`.
 - `quote-of-day.js` — a quote that changes at local midnight
 
 **SLEEP** logs itself: the YOU watch app reads last night from Apple Health and uploads it, so its tile shows hours asleep, bed and wake times and your week's average against your goal, and its streak counts the nights recorded.
+
+## Goals
+
+**Your goals** (below the tiles, and in the sidebar) are targets that track themselves from what you already log:
+
+- **Reach a weight** (BODY): progress from where you started, your trend over the last four weeks, and the date you'll get there at that pace.
+- **Pay off debt** (MONEY): your debts' total balance against where it was when you set the goal, and when you'll be clear at the rate you're paying.
+- **Spend under a monthly limit** (MONEY): this month so far and where you're on pace to finish.
+- **Work out each week** (GYM): days with sets or cardio this week, and how many of the last four weeks you hit it.
+- **Sleep more** (SLEEP): your 7-night average against your target.
+- **Finish a book** (READ): pages logged against the book's length, and your finish date at your recent pace.
+
+Give weight, debt and book goals an optional date and YOU says whether you're on pace, how early or late, and what it takes to make it. Goals are marked done when you reach them. The coach and the weekly review read them too. Run [goals.sql](goals.sql) once in Supabase.
 
 ## Settings
 

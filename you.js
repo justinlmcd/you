@@ -1,4 +1,5 @@
-// YOU. Reads what the seven apps wrote and shows one number each. Nothing is written from here.
+// YOU. Reads what the seven apps wrote and shows one number each. The only things written from here are
+// your goals (the goals table) and your settings (user_settings).
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
@@ -59,7 +60,7 @@ function setUser(next){
   user=next; loadId++;
   $('connect-open').hidden=!!user; $('sign-out').hidden=!user; $('refresh').hidden=!user;
   $('connection-status').textContent=user?'Connected':'Your record'; $('connection-status').classList.toggle('connected',!!user);
-  if(!user){ data={}; settingsState='local'; render(); syncSettingsView(); } else { load(); pullSettings(); }
+  if(!user){ data={}; goals=[]; goalsState='loading'; settingsState='local'; render(); syncSettingsView(); } else { load(); pullSettings(); }
   window.coachUser?.(user?.id);
 }
 $('connect-open').onclick=()=>{ $('connection-dialog').showModal(); $('email').focus(); };
@@ -86,10 +87,12 @@ async function load(){
     gym: async()=>({sets:await readAll(()=>db.from('sets').select('exercise_id,performed_on,weight,reps',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})),exercises:await readAll(()=>db.from('exercises').select('id,name',{count:'exact'}).order('name')),cardio:await readAll(()=>db.from('cardio').select('performed_on,kind,minutes,calories',{count:'exact'}).gte('performed_on',since60).order('performed_on',{ascending:false})).catch(()=>[])}),
     meal: async()=>({entries:await readAll(()=>db.from('meal_entries').select('eaten_on,calories,protein,carbs,fat',{count:'exact'}).gte('eaten_on',since60).order('eaten_on',{ascending:false})),goals:(await db.from('meal_goals').select('*').maybeSingle()).data}),
     write: ()=>readAll(()=>db.from('journal_entries').select('written_on,rating,body',{count:'exact'}).gte('written_on',since60).order('written_on',{ascending:false})),
-    read: async()=>({books:await readAll(()=>db.from('books').select('title,author,status,rating,finished_on',{count:'exact'}).order('updated_at',{ascending:false})),logs:await readAll(()=>db.from('reading_log').select('read_on,pages',{count:'exact'}).gte('read_on',since60).order('read_on',{ascending:false})).catch(()=>[])}),
+    read: async()=>({books:await readAll(()=>db.from('books').select('id,title,author,status,rating,finished_on,total_pages',{count:'exact'}).order('updated_at',{ascending:false})),logs:await readAll(()=>db.from('reading_log').select('book_id,read_on,pages',{count:'exact'}).gte('read_on',since60).order('read_on',{ascending:false})).catch(()=>[])}),
     sleep: async()=>({nights:await readAll(()=>db.from('sleep_nights').select('night,bedtime,wake_time,asleep_min,deep_min,rem_min,resting_hr',{count:'exact'}).gte('night',since60).order('night',{ascending:false})),goal:Number((await db.from('sleep_goals').select('goal_hours').maybeSingle()).data?.goal_hours)||8})
   };
+  const goalsRead=loadGoals(db,id);
   const results=await Promise.allSettled(APPS.map(a=>reads[a]()));
+  await goalsRead;
   if(id!==loadId)return;
   data={}; for(let i=0;i<APPS.length;i++){ const r=results[i]; data[APPS[i]]=r.status==='fulfilled'?{ok:true,v:r.value}:{ok:false,err:r.reason?.message||'unavailable'}; }
   lateNight(data);
@@ -136,7 +139,7 @@ function render(){
   $('today-count').textContent=signed?String(loggedToday):'—'; $('today-unit').textContent=`of ${apps||APPS.length} logged today`;
   $('today-note').textContent=signed?(apps<APPS.length?`${apps} of ${APPS.length} apps connected to this database.`:`All seven apps on one login.`):'Sign in to see all of it in one place.';
   $('side-today').textContent=signed?`${loggedToday}/${apps||APPS.length}`:'—';
-  renderWeek();
+  renderWeek(); renderGoals();
 }
 
 // Counting back from today. Today isn't over, so a streak that only misses today is still alive and shows faded
@@ -159,6 +162,7 @@ function coachSummary(){
   if(data.write?.ok){ const e=data.write.v.filter(r=>r.written_on>=addDays(t,-29)); L.push(`WRITE: ${e.length} journal entries in 30 days, average rating ${e.length?r1(e.reduce((a,r)=>a+r.rating,0)/e.length):'none'}.`); for(const r of e) add(r.written_on,`rated day ${r.rating}/10${r.body?.trim()?` "${r.body.trim().slice(0,140).replace(/\s+/g,' ')}${r.body.length>140?'…':''}"`:''}`); }
   if(data.read?.ok){ const b=data.read.v.books; L.push(`READ: reading ${b.filter(x=>x.status==='reading').map(x=>x.title).join(', ')||'nothing'}; finished ${b.filter(x=>x.status==='finished'&&(x.finished_on||'')>=since).map(x=>`${x.title} (${x.rating}/10)`).join(', ')||'nothing'} in 28 days.`); for(const x of b) if(x.finished_on) add(x.finished_on,`finished reading ${x.title}`); }
   if(data.sleep?.ok){ const {nights,goal}=data.sleep.v; const n=nights.filter(x=>x.night>=since); L.push(`SLEEP (from Apple Health, keyed by the morning woken): goal ${r1(goal)} h. ${n.length} nights recorded in 28 days, average ${n.length?hm(n.reduce((a,x)=>a+Number(x.asleep_min),0)/n.length):'n/a'} asleep.`); for(const x of n) add(x.night,`slept ${hm(x.asleep_min)} the night before${x.deep_min!=null?` (deep ${hm(x.deep_min)}, REM ${hm(x.rem_min)})`:''}${x.resting_hr!=null?`, resting HR ${r0(x.resting_hr)}`:''}`); }
+  { const gs=goalsSummary(); if(gs) L.push(gs); }
   L.push('\nDay by day, last 28 days (missing days had nothing logged anywhere):');
   for(let d=since; d<=t; d=addDays(d,1)) if(dayLine[d]) L.push(`${d}: ${dayLine[d].join('; ')}`);
   return L.join('\n');
@@ -242,6 +246,7 @@ function weekSummary(){
   if(S.write) L.push(`WRITE: ${S.write.n} entries, average rating ${S.write.avg!=null?r1(S.write.avg):'n/a'} (week before ${P.write?.avg!=null?r1(P.write.avg):'n/a'}).`);
   if(S.read) L.push(`READ: ${S.read.pages} pages on ${S.read.days} days (week before ${P.read?.pages??0} pages).`);
   if(S.sleep) L.push(`SLEEP (Apple Health; each night is listed on the morning woken): ${S.sleep.n} nights, average ${S.sleep.avg!=null?hm(S.sleep.avg):'n/a'} asleep (week before ${P.sleep?.avg!=null?hm(P.sleep.avg):'n/a'}), ${S.sleep.met} at the ${r1(S.sleep.goal)} h goal.`);
+  { const gs=goalsSummary(); if(gs) L.push(gs); }
   L.push('\nDay by day:');
   for(const d of r.days){ if(d>r.until) break; const x=[];
     if(S.body?.byDay[d]!=null) x.push(`weight ${S.body.byDay[d]}`);
@@ -268,6 +273,237 @@ async function askWeek(){
     try{ localStorage.setItem(reviewKey(r.start),JSON.stringify(j)); }catch{}
   }catch(err){ weekError=err.message||'The review could not be written.'; }
   finally{ weekBusy=false; renderWeek(); }
+}
+
+// ---- goals: targets that track themselves from what the apps log (the goals table, goals.sql) ----
+const GOAL_KINDS={
+  weight:{label:'Reach a weight',app:'body',name:'BODY'},
+  debt:{label:'Pay off debt',app:'money',name:'MONEY'},
+  spend:{label:'Spend under a monthly limit',app:'money',name:'MONEY'},
+  workouts:{label:'Work out each week',app:'gym',name:'GYM'},
+  sleep:{label:'Sleep more',app:'sleep',name:'SLEEP'},
+  book:{label:'Finish a book',app:'read',name:'READ'},
+};
+let goals=[], goalsState='loading', bookPages={}, goalBusy=false;
+async function loadGoals(db,id){
+  try{
+    const rows=await readAll(()=>db.from('goals').select('*',{count:'exact'}).eq('archived',false).order('created_at',{ascending:true}));
+    const refs=[...new Set(rows.filter(g=>g.kind==='book'&&g.ref).map(g=>g.ref))], pages={};
+    if(refs.length){ const logs=await readAll(()=>db.from('reading_log').select('book_id,pages',{count:'exact'}).in('book_id',refs)); for(const l of logs) pages[l.book_id]=(pages[l.book_id]||0)+Number(l.pages); }
+    if(id!==loadId) return; goals=rows; bookPages=pages; goalsState='ok';
+  }catch(err){ if(id!==loadId) return; goals=[]; goalsState=/relation .* does not exist|schema cache|could not find the table/i.test(err.message||'')?'missing':'error'; }
+}
+const LB=0.45359237;
+const toUnit=(v,from,to)=>{ const f=String(from||'lbs').toLowerCase().startsWith('k')?'kg':'lbs'; v=Number(v); return f===to?v:to==='kg'?v*LB:v/LB; };
+// "8h", "7h 30m" or "45 min".
+const hrs=m=>{ m=Math.round(m); return m<60?`${m} min`:m%60?hm(m):`${m/60}h`; };
+const daysBetween=(a,b)=>Math.round((parseDay(b)-parseDay(a))/86400000);
+const longDate=s=>parseDay(s).toLocaleDateString([], {month:'short',day:'numeric',year:parseDay(s).getFullYear()===parseDay(today()).getFullYear()?undefined:'numeric'});
+const span=n=>{ n=Math.abs(n); return n<14?`${n} day${n===1?'':'s'}`:n<70?`${Math.round(n/7)} weeks`:`${Math.round(n/30.4)} months`; };
+// Straight-line trend per day through recent points [{d:'YYYY-MM-DD',v}].
+function trend(points){ if(points.length<3) return null; const xs=points.map(p=>daysBetween(points[0].d,p.d)); if(xs.at(-1)-xs[0]<7) return null;
+  const n=xs.length, mx=xs.reduce((a,b)=>a+b,0)/n, my=points.reduce((a,p)=>a+p.v,0)/n; let num=0,den=0; xs.forEach((x,i)=>{ num+=(x-mx)*(points[i].v-my); den+=(x-mx)**2; }); return den?num/den:null; }
+// Today's books in READ, by id.
+const bookById=id=>(data.read?.ok?data.read.v.books:[]).find(b=>b.id===id);
+// What each goal's apps say right now: current value, progress 0–1, and a line about pace.
+function goalNow(g){
+  const t=today(), U=SET.get().weight, K=GOAL_KINDS[g.kind]; if(!K) return null;
+  const off=!data[K.app]?.ok; const out={g,K,off,progress:0,status:'',value:'—',of:'',sub:'',pace:'',done:!!g.done_on,reached:false,projected:null};
+  if(off){ out.sub=`${K.name} isn't connected.`; return out; }
+  // A finish line by a date: pace against the date, or the rate it needs.
+  const finish=(left,ratePerDay,fmtNeed)=>{
+    if(out.reached) return;
+    out.projected=ratePerDay>0?addDays(t,Math.ceil(left/ratePerDay)):null;
+    if(g.due_date){ const daysLeft=daysBetween(t,g.due_date);
+      if(daysLeft<0){ out.status='bad'; out.pace=`Your date was ${longDate(g.due_date)}.${out.projected?` At this pace: ${longDate(out.projected)}.`:''}`; return; }
+      if(out.projected&&out.projected<=g.due_date){ out.status='good'; const early=daysBetween(out.projected,g.due_date); out.pace=`On pace for ${longDate(out.projected)}${early>=3?`, ${span(early)} early`:''}.`; }
+      else { out.status='bad'; out.pace=`${out.projected?`At this pace ${longDate(out.projected)}, ${span(daysBetween(g.due_date,out.projected))} late. `:''}Needs ${fmtNeed(left/Math.max(daysLeft,1))} to make ${longDate(g.due_date)}.`; }
+    } else out.pace=out.projected?`At this pace: ${longDate(out.projected)}.`:'';
+  };
+  if(g.kind==='weight'){
+    const w=data.body.v, target=toUnit(g.target,g.unit,U), start=toUnit(g.start_value,g.unit,U);
+    if(!w.length){ out.sub='No weigh-ins yet.'; return out; }
+    const cur=toUnit(w[0].value,w[0].unit,U), down=start>target;
+    out.value=r1(cur); out.of=`/ ${r1(target)} ${U}`;
+    out.progress=start===target?1:(start-cur)/(start-target); out.reached=down?cur<=target:cur>=target;
+    const moved=cur-start; out.sub=Math.abs(moved)<0.05?`Started at ${r1(start)} ${U} on ${longDate(g.start_date)}.`:`${r1(Math.abs(moved))} ${U} ${moved<0?'down':'up'} since ${longDate(g.start_date)}.`;
+    const recent=w.filter(r=>dayOf(r.occurred_at)>=addDays(t,-27)).map(r=>({d:dayOf(r.occurred_at),v:toUnit(r.value,r.unit,U)})).reverse();
+    const slope=trend(recent), toward=slope!=null&&(down?slope<0:slope>0);
+    finish(Math.abs(target-cur),toward?Math.abs(slope):0,perDay=>`${r1(perDay*7)} ${U} a week`);
+    if(!out.reached&&!out.pace) out.pace=slope==null?'Weigh in a few times a week to see your pace.':toward?'':`Trending ${down?'up':'down'} lately: ${r1(Math.abs(slope*7))} ${U} a week.`;
+    if(!out.reached&&slope!=null&&!toward) out.status='bad';
+  }
+  if(g.kind==='debt'){
+    const debts=data.money.v.debts||[]; if(!debts.length&&g.start_value==null){ out.sub='No debts in MONEY.'; return out; }
+    const cur=debts.reduce((a,d)=>a+Number(d.balance),0), start=Number(g.start_value??cur), target=Number(g.target);
+    out.value=currency.format(cur); out.of=target?`left · aim ${currency.format(target)}`:'left';
+    out.progress=start<=target?1:(start-cur)/(start-target); out.reached=cur<=target;
+    const paid=start-cur, days=Math.max(1,daysBetween(g.start_date,t));
+    out.sub=paid>0.5?`${currency.format(paid)} paid off since ${longDate(g.start_date)}.`:`Started at ${currency.format(start)} on ${longDate(g.start_date)}.`;
+    finish(cur-target,days>=7&&paid>0?paid/days:0,perDay=>`${currency.format(perDay*30.4)} a month`);
+    if(!out.reached&&!out.pace) out.pace=days<7?'Your pace shows after a week of payments.':'Record payments in MONEY to see your pace.';
+  }
+  if(g.kind==='spend'){
+    const ms=t.slice(0,8)+'01', spent=data.money.v.tx.filter(r=>r.occurred_on>=ms).reduce((a,r)=>a+Number(r.amount),0), limit=Number(g.target);
+    const dom=Number(t.slice(8,10)), dim=new Date(Number(t.slice(0,4)),Number(t.slice(5,7)),0).getDate(), proj=dom>=3?spent/dom*dim:null;
+    out.value=currency.format(spent); out.of=`/ ${currency.format(limit)} this month`; out.progress=limit?spent/limit:1; out.over=spent>limit;
+    out.sub=spent>limit?`${currency.format(spent-limit)} over.`:`${currency.format(limit-spent)} left, ${dim-dom+1} day${dim-dom?'s':''} to go.`;
+    if(proj!=null){ out.status=proj<=limit?'good':'bad'; out.pace=`On pace for ${currency.format(proj)}${proj<=limit?`, ${currency.format(limit-proj)} under`:`, ${currency.format(proj-limit)} over`}.`; }
+  }
+  if(g.kind==='workouts'){
+    const {sets,cardio=[]}=data.gym.v, days=new Set(sets.map(s=>s.performed_on).concat(cardio.map(c=>c.performed_on))), per=Number(g.target);
+    const ws=weekStart(t), count=[...days].filter(d=>d>=ws&&d<=t).length, left=7-daysBetween(ws,t);
+    out.value=String(count); out.of=`/ ${per} this week`; out.progress=count/per; out.reached=count>=per;
+    let hit=0; for(let i=1;i<=4;i++){ const s0=addDays(ws,-7*i), e0=addDays(s0,6); if([...days].filter(d=>d>=s0&&d<=e0).length>=per) hit++; }
+    out.sub=`Hit it ${hit} of the last 4 weeks.`;
+    if(count>=per){ out.status='good'; out.pace='Done for this week.'; } else { const need=per-count; out.status=need<=left-1?'':'bad'; out.pace=`${need} more, ${left} day${left===1?'':'s'} left this week${left===1?' (today)':''}.`; }
+    out.done=false;
+  }
+  if(g.kind==='sleep'){
+    const {nights}=data.sleep.v, wk=nights.filter(n=>n.night>addDays(t,-7)), goalMin=Number(g.target)*60;
+    if(!wk.length){ out.sub='No nights in the last week.'; out.value='—'; out.of=`/ ${hm(goalMin)}`; return out; }
+    const avg=wk.reduce((a,n)=>a+Number(n.asleep_min),0)/wk.length, met=wk.filter(n=>Number(n.asleep_min)>=goalMin).length;
+    out.value=hm(avg); out.of=`/ ${hrs(goalMin)} a night`; out.progress=avg/goalMin;
+    out.sub=`${met} of the last ${wk.length} night${wk.length===1?'':'s'} at your goal.`;
+    out.status=avg>=goalMin?'good':'bad'; out.pace=avg>=goalMin?'Averaging above your goal this week.':`${hrs(goalMin-avg)} a night short, on average.`;
+    out.done=false;
+  }
+  if(g.kind==='book'){
+    const book=bookById(g.ref), total=Number(g.target), read=bookPages[g.ref]||0;
+    out.title=book?`Finish ${book.title}`:'Finish a book';
+    out.value=String(read); out.of=`/ ${total} pages`; out.progress=total?read/total:0; out.reached=read>=total||book?.status==='finished';
+    out.sub=book?.status==='finished'?`Finished${book.finished_on?' '+longDate(book.finished_on):''}.`:`${Math.max(0,total-read)} pages to go.`;
+    const recent=(data.read.v.logs||[]).filter(l=>l.book_id===g.ref&&l.read_on>addDays(t,-14)).reduce((a,l)=>a+Number(l.pages),0);
+    finish(total-read,recent/14,perDay=>`${Math.ceil(perDay)} pages a day`);
+    if(!out.reached&&!out.pace) out.pace='Log pages in READ to see your pace.';
+  }
+  if(out.reached){ out.status='good'; out.done=true; out.pace=g.done_on?`Done ${longDate(g.done_on)}. 🎉`:'Done. 🎉'; out.progress=1; }
+  out.progress=Math.max(0,Math.min(1,out.progress||0));
+  return out;
+}
+function goalTitle(g){
+  const U=SET.get().weight;
+  if(g.kind==='weight') return `Reach ${r1(toUnit(g.target,g.unit,U))} ${U}`;
+  if(g.kind==='debt') return Number(g.target)?`Get debt down to ${currency.format(g.target)}`:'Pay off all debt';
+  if(g.kind==='spend') return `Spend under ${currency.format(g.target)} a month`;
+  if(g.kind==='workouts') return `${r0(g.target)} workout${Number(g.target)===1?'':'s'} a week`;
+  if(g.kind==='sleep') return `Sleep ${hrs(Number(g.target)*60)} a night`;
+  if(g.kind==='book') return bookById(g.ref)?`Finish ${bookById(g.ref).title}`:'Finish a book';
+  return 'Goal';
+}
+// Mark weight, debt and book goals done the first time they're reached.
+const marking=new Set();
+function markDone(g){ if(marking.has(g.id)) return; marking.add(g.id); g.done_on=today();
+  connect().then(db=>db.from('goals').update({done_on:g.done_on,updated_at:new Date().toISOString()}).eq('id',g.id)).catch(()=>{}); }
+function renderGoals(){
+  const box=$('goals-body'), add=$('goal-add'); if(!box) return;
+  add.hidden=!user||goalsState!=='ok';
+  const side=t=>{ $('side-goals').textContent=t; };
+  if(!user){ box.innerHTML='<p class="coach-empty">Sign in to set goals that track themselves from your apps.</p>'; side('—'); return; }
+  if(goalsState==='loading'||!Object.keys(data).length){ box.innerHTML='<p class="coach-empty">Loading your goals…</p>'; return; }
+  if(goalsState==='missing'){ box.innerHTML='<p class="coach-empty">Goals need one table. Run <code>goals.sql</code> in Supabase, then refresh.</p>'; side('—'); return; }
+  if(goalsState==='error'){ box.innerHTML='<p class="coach-empty">Could not load your goals. Refresh to try again.</p>'; side('—'); return; }
+  if(!goals.length){
+    box.innerHTML=`<p class="coach-empty">Set a target and it tracks itself from what you already log, with your pace and whether you'll make it.</p><div class="goal-suggest">${goalSuggestions().map(([k,label,v])=>`<button type="button" class="chip" data-suggest="${k}" data-value="${esc(v)}">${esc(label)}</button>`).join('')}</div>`;
+    side('None yet'); return;
+  }
+  const now=goals.map(goalNow).filter(Boolean);
+  for(const n of now) if(n.reached&&!n.g.done_on&&['weight','debt','book'].includes(n.g.kind)) markDone(n.g);
+  box.innerHTML=`<div class="goal-grid">${now.map(n=>`<button type="button" class="goal${n.done?' done':''}" style="--c:var(--app-${n.K.app})" data-goal="${esc(n.g.id)}" aria-label="Edit goal: ${esc(goalTitle(n.g))}">
+    <span class="goal-top"><span class="goal-app">${n.K.name}</span><span>${n.g.due_date&&!n.done?`by ${esc(longDate(n.g.due_date))}`:''}</span></span>
+    <span class="goal-title">${esc(goalTitle(n.g))}</span>
+    <span class="goal-nums"><strong>${esc(n.value)}</strong><small>${esc(n.of)}</small></span>
+    <span class="goal-bar${n.over?' over':''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(n.progress*100)}"><i style="width:${(n.progress*100).toFixed(1)}%"></i></span>
+    <span class="goal-sub">${esc(n.sub)}</span>${n.pace?`<span class="goal-pace ${n.status}">${esc(n.pace)}</span>`:''}</button>`).join('')}</div>`;
+  const active=now.filter(n=>!n.done), good=active.filter(n=>n.status==='good').length;
+  side(active.length?`${good} of ${active.length} on track`:'All done 🎉');
+}
+// Starting points from your data, for when you have no goals yet.
+function goalSuggestions(){
+  const s=[], U=SET.get().weight;
+  if(data.body?.ok&&data.body.v.length){ const cur=toUnit(data.body.v[0].value,data.body.v[0].unit,U); const tgt=Math.round(cur-(U==='kg'?3:5)); s.push(['weight',`Reach ${tgt} ${U}`,tgt]); }
+  if(data.money?.ok&&(data.money.v.debts||[]).length){ s.push(['debt',`Pay off ${currency.format((data.money.v.debts||[]).reduce((a,d)=>a+Number(d.balance),0))} of debt`,0]); }
+  if(data.gym?.ok) s.push(['workouts','4 workouts a week',4]);
+  if(data.sleep?.ok) s.push(['sleep',`Sleep ${r1(data.sleep.v.goal||8)}h a night`,data.sleep.v.goal||8]);
+  if(data.read?.ok){ const b=data.read.v.books.find(x=>x.status==='reading'); if(b) s.push(['book',`Finish ${b.title}`,b.total_pages||'']); }
+  if(data.money?.ok){ const plan=(data.money.v.budget?.allocations||[]).filter(a=>a.kind==='need'||a.kind==='want').reduce((a,x)=>a+Number(x.amount),0); if(plan) s.push(['spend',`Spend under ${currency.format(plan)} a month`,Math.round(plan)]); }
+  return s;
+}
+// ---- the goal dialog ----
+function goalHint(kind){
+  const U=SET.get().weight, t=today();
+  if(kind==='weight') return data.body?.ok&&data.body.v.length?`You're at ${r1(toUnit(data.body.v[0].value,data.body.v[0].unit,U))} ${U}.`:'Log a weigh-in in BODY first.';
+  if(kind==='debt'){ const d=data.money?.ok?(data.money.v.debts||[]):[]; return d.length?`Your debts in MONEY total ${currency.format(d.reduce((a,x)=>a+Number(x.balance),0))}. 0 means paid off.`:'Add your debts in MONEY first.'; }
+  if(kind==='spend'){ const ms=t.slice(0,8)+'01'; return data.money?.ok?`Spent so far this month: ${currency.format(data.money.v.tx.filter(r=>r.occurred_on>=ms).reduce((a,r)=>a+Number(r.amount),0))}.`:''; }
+  if(kind==='workouts') return 'Days with sets or cardio in GYM, Monday to Sunday.';
+  if(kind==='sleep'){ if(!data.sleep?.ok) return ''; const wk=data.sleep.v.nights.filter(n=>n.night>addDays(t,-7)); return wk.length?`Your last ${wk.length} nights averaged ${hm(wk.reduce((a,n)=>a+Number(n.asleep_min),0)/wk.length)}.`:''; }
+  if(kind==='book'){ const id=$('goal-book').value; return id?`Pages logged so far: ${bookPages[id]??(data.read.v.logs||[]).filter(l=>l.book_id===id).reduce((a,l)=>a+Number(l.pages),0)}${(bookPages[id]==null)?' in the last 60 days':''}.`:'Add the book in READ first.'; }
+  return '';
+}
+function syncGoalForm(){
+  const kind=$('goal-kind').value, U=SET.get().weight;
+  const labels={weight:`Target weight (${U})`,debt:'Get debt down to ($)',spend:'Monthly limit ($)',workouts:'Workouts a week',sleep:'Hours a night',book:'Total pages in the book'};
+  $('goal-target-label').textContent=labels[kind];
+  const t=$('goal-target'); t.step=kind==='workouts'?'1':kind==='sleep'||kind==='weight'?'0.1':'1'; t.min=kind==='workouts'?'1':'0'; t.max=kind==='workouts'?'7':kind==='sleep'?'12':'';
+  $('goal-book-field').hidden=kind!=='book'; $('goal-due-field').hidden=!['weight','debt','book'].includes(kind);
+  $('goal-hint').textContent=goalHint(kind);
+}
+function openGoal(g,suggest){
+  if(!user)return; const editing=!!g; $('goal-message').textContent=''; $('goal-message').className='message';
+  $('goal-heading').textContent=editing?'Edit goal.':'New goal.';
+  $('goal-id').value=g?.id||''; $('goal-kind').value=g?.kind||suggest?.kind||'weight'; $('goal-kind').disabled=editing;
+  const books=(data.read?.ok?data.read.v.books:[]).filter(b=>b.status!=='finished'||b.id===g?.ref);
+  $('goal-book').innerHTML=books.length?books.map(b=>`<option value="${esc(b.id)}">${esc(b.title)}</option>`).join(''):'<option value="">No books in READ</option>';
+  if(g?.ref) $('goal-book').value=g.ref;
+  const U=SET.get().weight;
+  $('goal-target').value=g?(g.kind==='weight'?r1(toUnit(g.target,g.unit,U)):String(Number(g.target))):(suggest?.value??'');
+  if(!g&&$('goal-kind').value==='book'&&!$('goal-target').value){ const b=bookById($('goal-book').value); if(b?.total_pages) $('goal-target').value=b.total_pages; }
+  $('goal-due').value=g?.due_date||''; $('goal-due').min=today();
+  $('goal-delete').hidden=!editing; $('goal-delete').textContent=g?.done_on?'Clear goal':'Delete goal';
+  syncGoalForm(); $('goal-dialog').showModal(); $('goal-target').focus();
+}
+$('goal-kind').onchange=()=>{ $('goal-target').value=''; if($('goal-kind').value==='book'){ const b=bookById($('goal-book').value); if(b?.total_pages) $('goal-target').value=b.total_pages; } syncGoalForm(); };
+$('goal-book').onchange=()=>{ const b=bookById($('goal-book').value); if(b?.total_pages) $('goal-target').value=b.total_pages; syncGoalForm(); };
+$('goal-add').onclick=()=>openGoal(null);
+$('goal-close').onclick=()=>{ if(!goalBusy) $('goal-dialog').close(); };
+document.addEventListener('click',e=>{ const c=e.target.closest('[data-goal]'); if(c){ const g=goals.find(x=>x.id===c.dataset.goal); if(g) openGoal(g); return; }
+  const s=e.target.closest('[data-suggest]'); if(s) openGoal(null,{kind:s.dataset.suggest,value:s.dataset.value}); });
+$('goal-form').addEventListener('submit',async e=>{
+  e.preventDefault(); if(goalBusy||!user)return;
+  const id=$('goal-id').value, kind=$('goal-kind').value, U=SET.get().weight, target=Number($('goal-target').value), t=today();
+  const fail=m=>{ $('goal-message').textContent=m; $('goal-message').className='message error'; };
+  if(!Number.isFinite(target)||target<0||$('goal-target').value==='') return fail('Enter a number.');
+  const row={kind,target,due_date:['weight','debt','book'].includes(kind)&&$('goal-due').value||null,updated_at:new Date().toISOString()};
+  const old=goals.find(g=>g.id===id);
+  if(kind==='weight'){ if(!target) return fail('Enter your target weight.'); row.unit=U;
+    if(old) row.start_value=toUnit(old.start_value,old.unit,U);
+    else { if(!data.body?.ok||!data.body.v.length) return fail('Log a weigh-in in BODY first, so the goal has a starting point.'); row.start_value=Math.round(toUnit(data.body.v[0].value,data.body.v[0].unit,U)*10)/10; } }
+  if(kind==='debt'&&!old){ const d=data.money?.ok?(data.money.v.debts||[]):[]; if(!d.length) return fail('Add your debts in MONEY first.'); row.start_value=d.reduce((a,x)=>a+Number(x.balance),0); if(target>=row.start_value) return fail(`Your debt is ${currency.format(row.start_value)} now; aim lower.`); }
+  if(kind==='spend'&&!target) return fail('Enter a monthly limit.');
+  if(kind==='workouts'&&!(Number.isInteger(target)&&target>=1&&target<=7)) return fail('Enter 1 to 7 workouts a week.');
+  if(kind==='sleep'&&!(target>=4&&target<=12)) return fail('Enter 4 to 12 hours.');
+  if(kind==='book'){ row.ref=$('goal-book').value; if(!row.ref) return fail('Add the book in READ first.'); if(!target) return fail('Enter how many pages the book has.'); }
+  if(old&&old.done_on&&['weight','debt','book'].includes(kind)) row.done_on=null; // a new target starts it again
+  if(!old) row.start_date=t;
+  goalBusy=true; $('goal-save').disabled=true;
+  try{ const db=await connect(); const {error}=old?await db.from('goals').update(row).eq('id',id):await db.from('goals').insert(row); if(error) throw error;
+    $('goal-dialog').close(); load(); }
+  catch(err){ fail(err.message||'Could not save the goal.'); }
+  finally{ goalBusy=false; $('goal-save').disabled=false; }
+});
+$('goal-delete').onclick=async()=>{
+  const g=goals.find(x=>x.id===$('goal-id').value); if(!g||goalBusy) return;
+  const done=!!g.done_on; if(!done&&!confirm(`Delete the goal "${goalTitle(g)}"?`)) return;
+  goalBusy=true;
+  try{ const db=await connect(); const {error}=done?await db.from('goals').update({archived:true,updated_at:new Date().toISOString()}).eq('id',g.id):await db.from('goals').delete().eq('id',g.id); if(error) throw error;
+    $('goal-dialog').close(); load(); }
+  catch(err){ $('goal-message').textContent=err.message||'Could not change the goal.'; $('goal-message').className='message error'; }
+  finally{ goalBusy=false; }
+};
+// For the coach and the weekly review.
+function goalsSummary(){
+  if(goalsState!=='ok'||!goals.length) return '';
+  return 'GOALS (tracked from the apps):\n'+goals.map(goalNow).filter(Boolean).map(n=>`- ${goalTitle(n.g)} (${n.K.name}): now ${n.value} ${n.of}. ${n.sub} ${n.pace}${n.g.due_date?` Target date ${n.g.due_date}.`:''}`.replace(/\s+/g,' ').trim()).join('\n');
 }
 
 // ---- settings tab ----
