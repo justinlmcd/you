@@ -198,6 +198,8 @@ body.in-settings main>:not(#settings){display:none!important}
 .font-opt{border:1px solid var(--line);border-radius:8px;background:transparent;padding:10px 6px 8px;text-align:center;color:var(--muted);font-size:11px}
 .font-opt span{display:block;font-size:22px;color:var(--ink);line-height:1.2;margin-bottom:2px}.font-opt[aria-pressed=true]{border-color:var(--mint);color:var(--ink);background:color-mix(in srgb,var(--mint) 10%,transparent)}
 .set-now{font-size:13px;color:var(--muted);margin:0;padding:0 0 16px}.set-now b{color:var(--ink);font-weight:600}
+.push-actions{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-self:end}@media(max-width:620px){.push-actions{justify-self:start}}
+.set-note.error{color:var(--error)}
 .set-note{font-size:12.5px;color:var(--muted);margin:0;padding:0 0 16px;line-height:1.5}
 .area-link.compact strong{font-size:15px;letter-spacing:-.01em;font-weight:550;color:var(--muted)}
 @media(max-width:620px){.set-group{padding:4px 16px}.set-row{grid-template-columns:1fr}.set-row .seg,.swatches,.fonts{justify-self:start;justify-content:flex-start}.fonts{min-width:0;width:100%}.set-row select{width:100%;min-width:0}}
@@ -227,6 +229,12 @@ body.in-settings main>:not(#settings){display:none!important}
 <div class="set-row"><label class="set-label" for="set-tz"><b>Time zone</b><small>Which day it is, and the times shown.</small></label><select id="set-tz"></select></div>
 <div class="set-row"><label class="set-label" for="set-dayend"><b>Day ends at</b><small>Up past midnight? Until this time, what you log counts toward the day before, and today's count and streaks don't roll over.</small></label><select id="set-dayend"></select></div>
 <p class="set-now" id="set-now"></p>
+</div>
+<div class="set-group"><h2>Weekly review</h2>
+<div class="set-row"><div class="set-label"><b>Write it on its own</b><small>Every Sunday, YOU writes your weekly review so it's waiting when you open the app.</small></div><div class="seg" role="group" aria-label="Automatic weekly review"><button type="button" data-set="reviewAuto" data-value="true">On</button><button type="button" data-set="reviewAuto" data-value="false">Off</button></div></div>
+<div class="set-row"><label class="set-label" for="set-review-hour"><b>Sunday at</b><small>When it's written and you get the notification, in your time zone.</small></label><select id="set-review-hour"></select></div>
+<div class="set-row"><div class="set-label"><b>Notifications on this device</b><small id="push-note">"Your weekly review is ready" when it's written.</small></div><div class="push-actions"><button class="quiet-button" id="push-on" type="button">Turn on</button><button class="text-button" id="push-test" type="button" hidden>Send a test</button><button class="text-button" id="push-off" type="button" hidden>Turn off</button></div></div>
+<p class="set-note" id="push-message" role="status" aria-live="polite"></p>
 </div>
 <div class="set-group"><h2>Units</h2>
 <div class="set-row"><div class="set-label"><b>Weight</b><small>BODY weigh-ins, converted from however they were logged.</small></div><div class="seg" role="group" aria-label="Weight unit"><button type="button" data-set="weight" data-value="lbs">lbs</button><button type="button" data-set="weight" data-value="kg">kg</button></div></div>

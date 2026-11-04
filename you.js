@@ -25,13 +25,13 @@ const clock=ts=>SET.clock(ts);
 const wt=r=>SET.weight(r.value,r.unit);
 const WORDS={1:'Awful',2:'Rough',3:'Bad',4:'Meh',5:'Okay',6:'Fine',7:'Good',8:'Great',9:'Excellent',10:'Perfect'};
 
-let client=null,user=null,busy=false,authSub=null,connecting=null,storageCleanup=null,urls={},loadId=0;
+let client=null,user=null,busy=false,authSub=null,connecting=null,storageCleanup=null,urls={},loadId=0,project=null;
 let data={};
 
 function message(id,text,kind=''){ $(id).textContent=text; $(id).className='message'+(kind?' '+kind:''); }
 
 // ---- connection: the public settings come from /api/config ----
-function projectConfig(v){ const url=typeof v?.url==='string'?v.url.trim().replace(/\/$/,''):'', key=typeof v?.key==='string'?v.key.trim():''; if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(url)||!/^sb_publishable_[A-Za-z0-9_-]+$/.test(key)) throw new Error('This page needs its Supabase connection set up in Vercel.'); urls=v.urls&&typeof v.urls==='object'?v.urls:{}; return {url,key}; }
+function projectConfig(v){ const url=typeof v?.url==='string'?v.url.trim().replace(/\/$/,''):'', key=typeof v?.key==='string'?v.key.trim():''; if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(url)||!/^sb_publishable_[A-Za-z0-9_-]+$/.test(key)) throw new Error('This page needs its Supabase connection set up in Vercel.'); urls=v.urls&&typeof v.urls==='object'?v.urls:{}; project={url,key}; return {url,key}; }
 async function connect(){
   if(client)return client; if(connecting)return connecting;
   connecting=(async()=>{ let r; try{ r=await fetch('/api/config',{cache:'no-store'}); }catch{ throw new Error('Could not connect. Check your internet connection and try again.'); }
@@ -90,9 +90,9 @@ async function load(){
     read: async()=>({books:await readAll(()=>db.from('books').select('id,title,author,status,rating,finished_on,total_pages',{count:'exact'}).order('updated_at',{ascending:false})),logs:await readAll(()=>db.from('reading_log').select('book_id,read_on,pages',{count:'exact'}).gte('read_on',since60).order('read_on',{ascending:false})).catch(()=>[])}),
     sleep: async()=>({nights:await readAll(()=>db.from('sleep_nights').select('night,bedtime,wake_time,asleep_min,deep_min,rem_min,resting_hr',{count:'exact'}).gte('night',since60).order('night',{ascending:false})),goal:Number((await db.from('sleep_goals').select('goal_hours').maybeSingle()).data?.goal_hours)||8})
   };
-  const goalsRead=loadGoals(db,id);
+  const goalsRead=loadGoals(db,id), reviewsRead=loadReviews(db,id);
   const results=await Promise.allSettled(APPS.map(a=>reads[a]()));
-  await goalsRead;
+  await goalsRead; await reviewsRead;
   if(id!==loadId)return;
   data={}; for(let i=0;i<APPS.length;i++){ const r=results[i]; data[APPS[i]]=r.status==='fulfilled'?{ok:true,v:r.value}:{ok:false,err:r.reason?.message||'unavailable'}; }
   lateNight(data);
@@ -260,9 +260,17 @@ function weekSummary(){
   return L.join('\n');
 }
 const reviewKey=start=>`you.week.${user?.id}.${start}`;
-function loadReview(start){ try{ return JSON.parse(localStorage.getItem(reviewKey(start))||'null'); }catch{ return null; } }
+// Reviews are kept in weekly_reviews (the automatic Sunday one, and any you write with the button), so every
+// device shows them; this device's own copy is the fallback.
+let reviews={};
+async function loadReviews(db,id){
+  try{ const {data,error}=await db.from('weekly_reviews').select('week_start,review,source').gte('week_start',addDays(today(),-70)); if(error) throw error; if(id!==loadId) return;
+    reviews=Object.fromEntries((data||[]).map(r=>[r.week_start,{...r.review,auto:r.source==='auto'}])); }
+  catch{ if(id===loadId) reviews={}; }
+}
+function loadReview(start){ if(reviews[start]) return reviews[start]; try{ return JSON.parse(localStorage.getItem(reviewKey(start))||'null'); }catch{ return null; } }
 function reviewHtml(v){
-  return `<p class="head">${esc(v.headline)}</p><div class="cols"><div><h3>Went well</h3><ul>${v.wins.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></div><div><h3>Watch</h3><ul>${v.watch.map(w=>`<li><b>${esc(w.what)}</b>${esc(w.why)}</li>`).join('')}</ul></div></div>${v.connection?`<p class="link"><span>The connection</span>${esc(v.connection)}</p>`:''}<p class="link"><span>Next week</span>${esc(v.next_week)}</p><p class="week-note">Written ${esc(new Date(v.at).toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'}))} from your own logs, not medical or financial advice.</p>`;
+  return `<p class="head">${esc(v.headline)}</p><div class="cols"><div><h3>Went well</h3><ul>${v.wins.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></div><div><h3>Watch</h3><ul>${v.watch.map(w=>`<li><b>${esc(w.what)}</b>${esc(w.why)}</li>`).join('')}</ul></div></div>${v.connection?`<p class="link"><span>The connection</span>${esc(v.connection)}</p>`:''}<p class="link"><span>Next week</span>${esc(v.next_week)}</p><p class="week-note">Written ${v.auto?'automatically ':''}${esc(new Date(v.at).toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'}))}${v.auto?` at ${esc(clock(v.at))}`:''} from your own logs, not medical or financial advice.</p>`;
 }
 async function askWeek(){
   if(weekBusy||!user)return; const r=weekRange(weekPick); weekBusy=true; weekError=''; renderWeek();
@@ -271,6 +279,7 @@ async function askWeek(){
     const res=await fetch('/api/week',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token},body:JSON.stringify({summary:weekSummary()})});
     const j=await res.json().catch(()=>({})); if(!res.ok) throw new Error(j.error||'The review could not be written.');
     try{ localStorage.setItem(reviewKey(r.start),JSON.stringify(j)); }catch{}
+    reviews[r.start]=j; db.from('weekly_reviews').upsert({week_start:r.start,review:j,source:'manual',created_at:new Date().toISOString()},{onConflict:'user_id,week_start'}).then(()=>{},()=>{});
   }catch(err){ weekError=err.message||'The review could not be written.'; }
   finally{ weekBusy=false; renderWeek(); }
 }
@@ -518,6 +527,7 @@ function buildSettings(){
   const device=Intl.DateTimeFormat().resolvedOptions().timeZone; let zones=[]; try{ zones=Intl.supportedValuesOf('timeZone'); }catch{} if(!zones.includes(device)) zones.unshift(device);
   const saved=SET.get().timeZone; if(saved&&!zones.includes(saved)) zones.unshift(saved);
   $('set-tz').innerHTML=`<option value="">Automatic · ${esc(device.replace(/_/g,' '))}</option>`+zones.map(z=>`<option value="${esc(z)}">${esc(z.replace(/_/g,' '))}</option>`).join('');
+  $('set-review-hour').innerHTML=Array.from({length:12},(_,i)=>i+12).map(h=>`<option value="${h}">${h===12?'12:00 PM':`${h-12}:00 PM`}</option>`).join('');
   $('set-dayend').innerHTML=[0,1,2,3,4,5,6].map(h=>`<option value="${h}">${DAY_END_LABEL(h)}</option>`).join('');
   syncSettingsView();
 }
@@ -525,26 +535,63 @@ function syncSettingsView(){
   const v=SET.get(), m=SET.mode();
   document.querySelectorAll('[data-set]').forEach(b=>b.setAttribute('aria-pressed',String(String(v[b.dataset.set])===b.dataset.value)));
   document.querySelectorAll('.swatch').forEach(b=>b.style.setProperty('--sw',SET.accentColor(b.dataset.value,m)));
-  $('set-tz').value=v.timeZone; $('set-dayend').value=String(v.dayEnds);
+  $('set-tz').value=v.timeZone; $('set-dayend').value=String(v.dayEnds); $('set-review-hour').value=String(v.reviewHour); $('set-review-hour').disabled=!v.reviewAuto;
   const now=new Date(), t=today(), cal=now.toLocaleDateString('en-CA',{timeZone:v.timeZone||undefined});
   $('set-now').innerHTML=`Right now it's <b>${esc(now.toLocaleString([], {timeZone:v.timeZone||undefined,weekday:'short',hour:'numeric',minute:'2-digit'}))}</b> in ${esc(SET.zone().replace(/_/g,' '))}${cal!==t?`, which still counts as <b>${esc(parseDay(t).toLocaleDateString([], {weekday:'long',month:'short',day:'numeric'}))}</b> until ${DAY_END_LABEL(v.dayEnds)}`:''}.`;
   $('side-settings').textContent=settingsSummary();
+  syncPush();
   $('settings-sync').textContent=!user?'Saved on this device. Sign in to keep them with your account.':settingsState==='account'?'Saved to your account, so they follow you to other devices.':settingsState==='missing'?'Saved on this device. Run settings.sql in Supabase to keep them with your account.':settingsState==='error'?'Saved on this device; could not reach your account just now.':'Saved on this device.';
 }
 document.addEventListener('click',e=>{ const b=e.target.closest('[data-set]'); if(!b)return; const k=b.dataset.set; SET.set({[k]:b.dataset.value}); });
 $('set-tz').onchange=e=>SET.set({timeZone:e.target.value});
 $('set-dayend').onchange=e=>SET.set({dayEnds:Number(e.target.value)});
+$('set-review-hour').onchange=e=>SET.set({reviewHour:Number(e.target.value)});
+
+// ---- notifications: "Your weekly review is ready", sent by the weekly-review function in Supabase ----
+const pushSupported=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+const standalone=()=>window.matchMedia?.('(display-mode: standalone)').matches||navigator.standalone===true;
+let swReg=null;
+if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then(r=>{ swReg=r; syncPush(); }).catch(()=>{});
+const b64=s=>{ const p=(s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'); return Uint8Array.from(atob(p),c=>c.charCodeAt(0)); };
+async function reviewFn(action){
+  const db=await connect(); const {data:{session}}=await db.auth.getSession(); if(!session) throw new Error('Sign in first.');
+  const r=await fetch(`${project.url}/functions/v1/weekly-review?action=${action}`,{method:'POST',headers:{Authorization:'Bearer '+session.access_token,apikey:project.key}});
+  const j=await r.json().catch(()=>({})); if(r.status===404) throw new Error('The weekly-review function isn\'t deployed in Supabase yet.'); if(!r.ok) throw new Error(j.error||j.message||`Error ${r.status}`); return j;
+}
+const pushMsg=(t,kind='')=>{ $('push-message').textContent=t; $('push-message').className='set-note'+(kind==='error'?' error':''); };
+async function syncPush(){
+  if(!$('push-on')) return;
+  const on=$('push-on'), test=$('push-test'), off=$('push-off'), note=$('push-note');
+  if(!pushSupported()){ on.hidden=true; test.hidden=true; off.hidden=true;
+    note.textContent=/iPhone|iPad/.test(navigator.userAgent)&&!standalone()?'On iPhone, open YOU from its Home Screen icon (Share → Add to Home Screen) to turn these on.':'This browser can\'t show notifications.'; return; }
+  const sub=swReg?await swReg.pushManager.getSubscription().catch(()=>null):null, denied=Notification.permission==='denied';
+  on.hidden=!!sub; test.hidden=!sub; off.hidden=!sub; on.disabled=!user||denied;
+  note.textContent=denied?'Notifications are blocked for YOU. Allow them in Settings → Notifications → YOU, then come back.':sub?'On for this device: "Your weekly review is ready" when it\'s written.':user?'"Your weekly review is ready" when it\'s written.':'Sign in to turn these on.';
+}
+$('push-on').onclick=async()=>{
+  if(!user||!pushSupported()) return; pushMsg('Turning on…');
+  try{
+    if(await Notification.requestPermission()!=='granted'){ pushMsg('Notifications weren\'t allowed.','error'); return syncPush(); }
+    const reg=swReg||await navigator.serviceWorker.ready; const {publicKey}=await reviewFn('key');
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(publicKey)}); const j=sub.toJSON();
+    const db=await connect(); const {error}=await db.from('you_push_devices').upsert({endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth,device:navigator.userAgent.slice(0,160)},{onConflict:'endpoint'}); if(error) throw error;
+    pushMsg('On. Send a test to check it reaches you.');
+  }catch(err){ pushMsg(err.message||'Could not turn on notifications.','error'); }
+  syncPush();
+};
+$('push-test').onclick=async()=>{ pushMsg('Sending…'); try{ const {sent}=await reviewFn('test'); pushMsg(sent?'Sent. It should arrive in a few seconds.':'No device is signed up yet. Turn notifications on first.',sent?'':'error'); }catch(err){ pushMsg(err.message||'Could not send a test.','error'); } };
+$('push-off').onclick=async()=>{ try{ const sub=await swReg?.pushManager.getSubscription(); if(sub){ const db=await connect(); await db.from('you_push_devices').delete().eq('endpoint',sub.endpoint); await sub.unsubscribe(); } pushMsg('Off for this device.'); }catch(err){ pushMsg(err.message||'Could not turn them off.','error'); } syncPush(); };
 // Your account's copy wins when you sign in; after that, each change is saved to it.
 async function pullSettings(){
   if(!user)return; const id=loadId;
   try{ const db=await connect(); const {data:row,error}=await db.from('user_settings').select('settings').maybeSingle(); if(error)throw error; if(id!==loadId)return;
-    if(row) SET.replace({...SET.get(),...row.settings}); else await pushSettings(); settingsState='account'; }
+    if(row){ SET.replace({...SET.get(),...row.settings}); if(row.settings?.deviceZone!==Intl.DateTimeFormat().resolvedOptions().timeZone) await pushSettings(); } else await pushSettings(); settingsState='account'; }
   catch(err){ settingsState=/relation .* does not exist|schema cache|could not find the table/i.test(err.message||'')?'missing':'error'; }
   syncSettingsView();
 }
 async function pushSettings(){
   if(!user)return; const db=await connect();
-  const {error}=await db.from('user_settings').upsert({user_id:user.id,settings:SET.get(),updated_at:new Date().toISOString()},{onConflict:'user_id'}); if(error)throw error;
+  const {error}=await db.from('user_settings').upsert({user_id:user.id,settings:{...SET.get(),deviceZone:Intl.DateTimeFormat().resolvedOptions().timeZone},updated_at:new Date().toISOString()},{onConflict:'user_id'}); if(error)throw error;
 }
 SET.on((v,keys,remote)=>{
   syncSettingsView();
@@ -554,7 +601,7 @@ SET.on((v,keys,remote)=>{
 // The Settings tab: #settings swaps the page for the settings, anything else shows the overview.
 function route(){ const on=location.hash==='#settings'; document.body.classList.toggle('in-settings',on); $('settings').hidden=!on;
   document.querySelectorAll('.sidebar .area-link').forEach(a=>{ if(a.getAttribute('href')===(on?'#settings':'#you')) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
-  if(on){ syncSettingsView(); window.scrollTo(0,0); } }
+  if(on){ syncSettingsView(); syncPush(); window.scrollTo(0,0); } }
 window.addEventListener('hashchange',route);
 buildSettings(); route();
 

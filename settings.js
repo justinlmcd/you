@@ -7,7 +7,7 @@
 'use strict';
 const SCRIPT=document.currentScript, OWN_ACCENT=!!(SCRIPT&&SCRIPT.dataset.accent==='own');
 const KEY='you.settings';
-const DEFAULTS={theme:'system',accent:'stone',font:'default',timeZone:'',dayEnds:0,weight:'lbs',length:'imperial'};
+const DEFAULTS={theme:'system',accent:'stone',font:'default',timeZone:'',dayEnds:0,weight:'lbs',length:'imperial',reviewAuto:true,reviewHour:18};
 // Each accent: its name, then the tone on dark and on light (darker, so it reads on a light page).
 const ACCENTS={stone:['Stone','#ebe7df','#3a3833'],mint:['Mint','#9be3c0','#17805a'],sky:['Sky','#8fd3ff','#1d6fae'],lilac:['Lilac','#c9a7ff','#6b44c4'],peach:['Peach','#ffb88a','#b9521a'],rose:['Rose','#ff9fb8','#bd385e'],gold:['Gold','#ffd98a','#8a6200']};
 // System fonts only: nothing to download, so the page stays fast. Each falls back where a device lacks it.
@@ -23,6 +23,9 @@ function clean(v){
   const d=Number(v.dayEnds); if(Number.isInteger(d)&&d>=0&&d<=6) o.dayEnds=d;
   if(['lbs','kg'].includes(v.weight)) o.weight=v.weight;
   if(['imperial','metric'].includes(v.length)) o.length=v.length;
+  // The automatic Sunday review: on or off, and the hour (noon to 11 PM) it's written and you're notified.
+  if(v.reviewAuto===false||v.reviewAuto==='false') o.reviewAuto=false; else if(v.reviewAuto===true||v.reviewAuto==='true') o.reviewAuto=true;
+  const rh=Number(v.reviewHour); if(Number.isInteger(rh)&&rh>=12&&rh<=23) o.reviewHour=rh;
   return o;
 }
 function read(){ try{ return clean(JSON.parse(localStorage.getItem(KEY)||'null')); }catch{ return clean(null); } }
